@@ -1,16 +1,21 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
+import (
+	"io/ioutil"
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+)
+
 
 
 type Coordinator struct {
 	// Your definitions here.
-
+	files map[string]int
 }
+
 
 // Your code here -- RPC handlers for the worker to call.
 
@@ -19,12 +24,27 @@ type Coordinator struct {
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
+func (c *Coordinator) Map(args *MapArgs, reply *MapReply){
+	for filename, _ := range c.files{
+		if c.files[filename] == 0{
+			reply.filename = filename
+			file, err := os.Open(filename)
+			if err != nil {
+				log.Fatalf("cannot open %v", filename)
+			}
+			content, err := ioutil.ReadAll(file)
+			if err != nil {
+				log.Fatalf("cannot read %v", filename)
+			}
+			reply.content = content
+			file.Close()
+		}
+	}
 }
 
+func (c *Coordinator) Reduce(args *ReduceArgs, reply *ReduceReply){
 
+}
 //
 // start a thread that listens for RPCs from worker.go
 //
@@ -61,10 +81,12 @@ func (c *Coordinator) Done() bool {
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
-
-	// Your code here.
-
+	for _, filename := range files{
+		c.files[filename] = 0
+	}
 
 	c.server()
 	return &c
 }
+
+

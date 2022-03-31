@@ -1,10 +1,12 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"net/rpc"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -31,10 +33,16 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
+	num_mapper := 5
+	for i := 0; i < num_mapper; i++ {
+		reply := MapReply{}
+		go func (reply MapReply){
+			MapCall(0, &reply)
+			kva := mapf(reply.filename, reply.content)
 
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+			
+		}(reply)
+	}
 
 }
 
@@ -43,27 +51,29 @@ func Worker(mapf func(string, string) []KeyValue,
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func CallExample() {
+func MapCall(aorf int, reply *MapReply){
+	args := MapArgs{}
+	args.applyorfinish = aorf
 
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
+	ok := call("Coordinator.Map", &args, reply)
 	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
+		
 	} else {
-		fmt.Printf("call failed!\n")
+		fmt.Printf("map call failed!\n")
+	}
+
+}
+
+func ReduceCall(aorf int) {
+	args := ReduceArgs{}
+	args.applyorfinish = aorf
+	reply := ReduceReply{}
+
+	ok := call("Coordinator.Reduce", &args, &reply)
+	if ok {
+
+	} else {
+		fmt.Printf("reduce call failed!\n")
 	}
 }
 
