@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"time"
 )
 
@@ -44,48 +45,58 @@ func Worker(mapf func(string, string) []KeyValue,
 	for i := 0; i < num_mapper; i++ {
 		reply := MapReply{}
 		go func(reply MapReply, i int) {
-			MapCall(0, &reply, i)
+			MapCall(0, &reply, i, nil)
+			imfiles := make(map[string]int)
 			kva := mapf(reply.Filename, string(reply.Content))
 			for j := 0; j < len(kva); j++ {
-				i := ihash(kva[j].Key) % 10
-				oname := fmt.Sprintf("mr-%v%v", i, i)
+				rid := ihash(kva[j].Key) % 10
+				oname := fmt.Sprintf("mr-%v%v", i, rid)
+				imfiles[oname] = 0
 				file, _ := os.OpenFile(oname, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
 				enc := json.NewEncoder(file)
-				err := enc.Encode(&kva[i])
+				err := enc.Encode(&kva[j])
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "encode failed\n")
+					fmt.Fprintf(os.Stdout, "encode failed\n")
 					os.Exit(1)
 				}
 				file.Close()
 			}
-			MapCall(1, &reply, i)
+			MapCall(1, &reply, i, imfiles)
 		}(reply, i)
 	}
-	
 
+	time.Sleep(time.Second)
+	time.Sleep(time.Second)
+	time.Sleep(time.Second)
+	time.Sleep(time.Second)
+	time.Sleep(time.Second)
 	for i := 0; i < 10; i++ {
 		reply := ReduceReply{}
 		go func(reply ReduceReply, i int) {
 			ReduceCall(0, &reply, i)
 			oname := fmt.Sprintf("mr-out-%v", i)
 			file, _ := os.OpenFile(oname, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
-			file1, _ := os.OpenFile(reply.Filename, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
-			fmt.Println(reply.Filename)
 			intermediate := []KeyValue{}
-			dec := json.NewDecoder(file1)
-			for {
-				var kv KeyValue
-				if err := dec.Decode(&kv); err != nil {
-					break
+			for _, filename := range reply.Filesname {
+				file1, _ := os.OpenFile(filename, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
+				dec := json.NewDecoder(file1)
+				for {
+					var kv KeyValue
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					intermediate = append(intermediate, kv)
 				}
-				intermediate = append(intermediate, kv)
+				file1.Close()
 			}
+
+			sort.Sort(ByKey(intermediate))
 
 			j := 0
 			for j < len(intermediate) {
 				p := j + 1
 				for p < len(intermediate) && intermediate[p].Key == intermediate[j].Key {
-					j++
+					p++
 				}
 				values := []string{}
 				for k := j; k < p; k++ {
@@ -95,10 +106,11 @@ func Worker(mapf func(string, string) []KeyValue,
 				fmt.Fprintf(file, "%v %v\n", intermediate[j].Key, output)
 				j = p
 			}
+			file.Close()
 			ReduceCall(1, &reply, i)
 		}(reply, i)
 	}
-	time.Sleep(time.Second)
+	time.Sleep(time.Minute)
 }
 
 //
@@ -106,10 +118,11 @@ func Worker(mapf func(string, string) []KeyValue,
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func MapCall(aorf int, reply *MapReply, i int) {
+func MapCall(aorf int, reply *MapReply, i int, imfiles map[string]int) {
 	args := MapArgs{}
+	args.MapperId = i
 	args.Applyorfinish = aorf
-	fmt.Println(args.Applyorfinish)
+	args.IntermediateFilename = imfiles
 
 	ok := call("Coordinator.Map", &args, reply)
 	if ok {

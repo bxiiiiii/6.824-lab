@@ -19,7 +19,7 @@ import (
 type MapArgs struct {
 	MapperId int
 	Applyorfinish int
-	IntermediateFilename string
+	IntermediateFilename map[string]int
 	// FileSize int
 }
 
@@ -34,7 +34,8 @@ type ReduceArgs struct {
 }
 
 type ReduceReply struct{
-	Filename string
+	// Filename string
+	Filesname []string
 }
 // Add your RPC definitions here.
 
