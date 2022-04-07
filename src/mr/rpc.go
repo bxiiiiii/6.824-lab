@@ -19,6 +19,7 @@ import (
 type MapArgs struct {
 	MapperId int
 	Applyorfinish int
+	FinishedFile string
 	IntermediateFilename map[string]int
 	// FileSize int
 }
@@ -26,11 +27,13 @@ type MapArgs struct {
 type MapReply struct {
 	Filename string
 	Content []byte
+	Ret bool
 }
 
 type ReduceArgs struct {
 	RuducerId int
 	Applyorfinish int
+	FinishedFile []string
 }
 
 type ReduceReply struct{

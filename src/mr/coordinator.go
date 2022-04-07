@@ -28,7 +28,6 @@ type Coordinator struct {
 //
 func (c *Coordinator) Map(args *MapArgs, reply *MapReply) error {
 	if args.Applyorfinish == 0 {
-		// var filename string
 		filename := ""
 		c.mutex.Lock()
 		for filename = range c.files {
@@ -54,12 +53,23 @@ func (c *Coordinator) Map(args *MapArgs, reply *MapReply) error {
 		}
 	} else if args.Applyorfinish == 1 {
 		c.mutex.Lock()
-		c.mapper[args.MapperId] = 1
-		// c.f
+		// c.mapper[args.MapperId] = 1
+		c.files[args.FinishedFile] = 2
 		for k, v := range args.IntermediateFilename {
 			c.intermediateFiles[k] = v
 		}
 		c.mutex.Unlock()
+	} else if args.Applyorfinish == 2 {
+		c.mutex.Lock()
+		for _, v := range c.files {
+			if v != 2 {
+				c.mutex.Unlock()
+				reply.Ret = false
+				return nil
+			}
+		}
+		c.mutex.Unlock()
+		reply.Ret = true
 	}
 	return nil
 }
@@ -70,20 +80,34 @@ func (c *Coordinator) Reduce(args *ReduceArgs, reply *ReduceReply) error {
 		c.mutex.Lock()
 		c.reducer[args.RuducerId] = 0
 		for filename = range c.intermediateFiles {
-			if filename[4]-'0' == byte(args.RuducerId) {
+			// j := 0
+			// i := 0
+			// for i < len(filename) {
+			// 	if filename[i] == '-'{
+			// 		j++
+			// 	}
+			// 	if j == 2{
+			// 		break
+			// 	}
+			// }
+			if filename[4]-'0' == byte(args.RuducerId) && c.intermediateFiles[filename] == 0{
 				reply.Filesname = append(reply.Filesname, filename)
 				c.intermediateFiles[filename] = 1
-				
 			}
 		}
 		c.mutex.Unlock()
 	} else if args.Applyorfinish == 1 {
 		c.mutex.Lock()
-		c.reducer[args.RuducerId] = 1
+		// c.reducer[args.RuducerId] = 1
+		for _, i := range args.FinishedFile{
+			c.intermediateFiles[i] = 2
+		}
 		c.mutex.Unlock()
 	}
 	return nil
 }
+
+func (c *Coordinator) Reduce(args *ReduceArgs, reply *ReduceReply) error {
 
 //
 // start a thread that listens for RPCs from worker.go
@@ -113,14 +137,27 @@ func (c *Coordinator) Done() bool {
 		c.mutex.Unlock()
 		return false
 	}
-	for _, j := range c.mapper{
-		if j == 0{
+	// for _, j := range c.mapper{
+	// 	if j == 0{
+	// 		c.mutex.Unlock()
+	// 		return false
+	// 	}
+	// }
+	// for _, j := range c.reducer{
+	// 	if j == 0{
+	// 		c.mutex.Unlock()
+	// 		return false
+	// 	}
+	// }
+	for _, v := range c.files {
+		if v != 2 {
 			c.mutex.Unlock()
 			return false
 		}
 	}
-	for _, j := range c.reducer{
-		if j == 0{
+
+	for _, v := range c.intermediateFiles{
+		if v != 2 {
 			c.mutex.Unlock()
 			return false
 		}
