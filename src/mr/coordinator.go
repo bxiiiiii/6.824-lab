@@ -1,6 +1,7 @@
 package mr
 
 import (
+	// "fmt"
 	"io/ioutil"
 	"log"
 	"net"
@@ -55,21 +56,11 @@ func (c *Coordinator) Map(args *MapArgs, reply *MapReply) error {
 		c.mutex.Lock()
 		// c.mapper[args.MapperId] = 1
 		c.files[args.FinishedFile] = 2
+		// fmt.Println(args.IntermediateFilename)
 		for k, v := range args.IntermediateFilename {
 			c.intermediateFiles[k] = v
 		}
 		c.mutex.Unlock()
-	} else if args.Applyorfinish == 2 {
-		c.mutex.Lock()
-		for _, v := range c.files {
-			if v != 2 {
-				c.mutex.Unlock()
-				reply.Ret = false
-				return nil
-			}
-		}
-		c.mutex.Unlock()
-		reply.Ret = true
 	}
 	return nil
 }
@@ -79,18 +70,23 @@ func (c *Coordinator) Reduce(args *ReduceArgs, reply *ReduceReply) error {
 		var filename string
 		c.mutex.Lock()
 		c.reducer[args.RuducerId] = 0
+		// fmt.Println(c.intermediateFiles)
 		for filename = range c.intermediateFiles {
-			// j := 0
-			// i := 0
-			// for i < len(filename) {
-			// 	if filename[i] == '-'{
-			// 		j++
-			// 	}
-			// 	if j == 2{
-			// 		break
-			// 	}
-			// }
-			if filename[4]-'0' == byte(args.RuducerId) && c.intermediateFiles[filename] == 0{
+			if c.intermediateFiles[filename] != 0{
+				continue
+			}
+			j := 0
+			i := 0
+			for i < len(filename) {
+				if filename[i] == '-'{
+					j++
+				}
+				if j == 2{
+					break
+				}
+				i++
+			}
+			if filename[i+1]-'0' == byte(args.RuducerId) {
 				reply.Filesname = append(reply.Filesname, filename)
 				c.intermediateFiles[filename] = 1
 			}
@@ -107,8 +103,9 @@ func (c *Coordinator) Reduce(args *ReduceArgs, reply *ReduceReply) error {
 	return nil
 }
 
-func (c *Coordinator) Reduce(args *ReduceArgs, reply *ReduceReply) error {
+// func (c *Coordinator) Finished(args *ReduceArgs, reply *ReduceReply) error {
 
+// }
 //
 // start a thread that listens for RPCs from worker.go
 //

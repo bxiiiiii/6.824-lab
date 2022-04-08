@@ -55,8 +55,9 @@ func Worker(mapf func(string, string) []KeyValue,
 					kva := mapf(reply.Filename, string(reply.Content))
 					for j := 0; j < len(kva); j++ {
 						rid := ihash(kva[j].Key) % 10
-						// pid := os.Getpid()
-						oname := fmt.Sprintf("mr-%v%v", i, rid)
+						pid := os.Getpid()
+						oname := fmt.Sprintf("mr-%v:%v-%v", pid, i, rid)
+						// oname := fmt.Sprintf("mr-%v%v", i, rid)
 						imfiles[oname] = 0
 						file, _ := os.OpenFile(oname, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
 						enc := json.NewEncoder(file)
@@ -76,22 +77,22 @@ func Worker(mapf func(string, string) []KeyValue,
 					args2.IntermediateFilename = imfiles
 					MapCall(args2, &reply2)
 				} else {
-					time.Sleep(5 * time.Second)
+					time.Sleep(20 * time.Second)
 				}
 			}
 		}(i)
 	}
 
-	for {
-		reply3 := MapReply{}
-		args3 := MapArgs{}
-		args3.Applyorfinish = 2
-		MapCall(args3, &reply3)
-		if reply3.Ret {
-			break
-		}
-	}
-
+	// for {
+	// 	reply3 := MapReply{}
+	// 	args3 := MapArgs{}
+	// 	args3.Applyorfinish = 2
+	// 	MapCall(args3, &reply3)
+	// 	if reply3.Ret {
+	// 		break
+	// 	}
+	// }
+	time.Sleep(5 * time.Second)
 	for i := 0; i < 10; i++ {
 		go func(i int) {
 			for {
