@@ -17,7 +17,7 @@ import (
 //
 
 type MapArgs struct {
-	MapperId int
+	MapperId string
 	Applyorfinish int
 	FinishedFile string
 	IntermediateFilename map[string]int
@@ -31,14 +31,16 @@ type MapReply struct {
 }
 
 type ReduceArgs struct {
-	RuducerId int
+	RuducerId string
 	Applyorfinish int
 	FinishedFile []string
+	// outfile map[string]int
 }
 
 type ReduceReply struct{
 	// Filename string
 	Filesname []string
+	reserve bool
 }
 // Add your RPC definitions here.
 
