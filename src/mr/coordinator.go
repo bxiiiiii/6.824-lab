@@ -9,23 +9,28 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
-	"time"
+	// "time"
 )
 
 type Coordinator struct {
 	// Your definitions here.
-	files              map[string]int
-	intermediateFiles  map[string]int
-	mapper             map[string]int
-	reducer            map[string]int
-	outfiles           map[string]int
-	maptask            int
-	reducetask         int
+	files        map[string]int
+	siminFiles   map[uint8]int
+	mapper       map[string]int
+	mapjob       map[string]string
+	activeMapper map[string]int
+
+	// intermediateFiles  map[string]int
+	intermediateFiles []string
+	reducer           map[string]int
+	reducejob         map[string]uint8
+	activeReducer     map[string]int
+
 	maptaskFinished    int
 	reducetaskFinished int
 	interval           int
-	time               int
-	mutex              sync.Mutex
+	// time               int
+	mutex sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -38,15 +43,29 @@ type Coordinator struct {
 func (c *Coordinator) Map(args *MapArgs, reply *MapReply) error {
 	if args.Applyorfinish == 0 {
 		filename := ""
+		var v int
 		c.mutex.Lock()
-		c.mapper[args.MapperId] = 0
-		for filename = range c.files {
-			if c.files[filename] == 0 {
-				reply.Filename = filename
-				c.files[filename] = 1
-				c.mapper[args.MapperId] = 1
-				c.maptask++
+		ice := true
+		for k := range c.mapper {
+			if k == args.MapperId {
+				ice = false
 				break
+			}
+		}
+		if ice {
+			c.mapper[args.MapperId] = 0
+		}
+		if c.mapper[args.MapperId] != 3 {
+			for filename, v = range c.files {
+				// fmt.Println(c.files)
+				if v == 0 {
+					reply.Filename = filename
+					c.mapper[args.MapperId] = 1
+					c.activeMapper[args.MapperId] = 0
+					c.files[filename] = 1
+					c.mapjob[args.MapperId] = filename
+					break
+				}
 			}
 		}
 		c.mutex.Unlock()
@@ -67,13 +86,16 @@ func (c *Coordinator) Map(args *MapArgs, reply *MapReply) error {
 		if c.mapper[args.MapperId] != 3 {
 			c.mapper[args.MapperId] = 2
 			c.files[args.FinishedFile] = 2
-			c.maptask--
-			for k, v := range args.IntermediateFilename {
-				c.intermediateFiles[k] = v
+			for _, v := range args.IntermediateFilename {
+				c.intermediateFiles = append(c.intermediateFiles, v)
+				c.siminFiles[v[len(v)-1]-'0'] = 0
 			}
+			delete(c.activeMapper, args.MapperId)
+			delete(c.mapjob, args.MapperId)
 		}
 		//+* fmt.Println(args.MapperId)
-		//+* fmt.Println(c.files)
+		// fmt.Println(c.files)
+		// fmt.Println(c.intermediateFiles)
 		c.mutex.Unlock()
 	} else if args.Applyorfinish == 2 {
 		c.mutex.Lock()
@@ -91,35 +113,66 @@ func (c *Coordinator) Map(args *MapArgs, reply *MapReply) error {
 }
 
 func (c *Coordinator) Reduce(args *ReduceArgs, reply *ReduceReply) error {
+	// fmt.Println("~ ",args.Applyorfinish)
 	if args.Applyorfinish == 0 {
-		var filename string
 		c.mutex.Lock()
-		c.reducer[args.RuducerId] = 0
-		for filename = range c.intermediateFiles {
-			if c.intermediateFiles[filename] != 0 {
-				continue
+		ice := true
+		for k := range c.reducer {
+			if k == args.RuducerId {
+				ice = false
+				break
 			}
-			if filename[len(filename)-1] == args.RuducerId[len(args.RuducerId)-1] {
-				reply.Filesname = append(reply.Filesname, filename)
-				c.intermediateFiles[filename] = 1
+		}
+		if ice {
+			c.reducer[args.RuducerId] = 0
+		}
+		if c.reducer[args.RuducerId] != 3 {
+			fmt.Println(c.siminFiles)
+			fmt.Println(c.reducejob)
+			for k, v := range c.siminFiles {
+				fmt.Println(c.siminFiles)
+				if v == 0 {
+					for _, s := range c.intermediateFiles {
+						if s[len(s)-1] == k+'0' {
+							reply.Filesname = append(reply.Filesname, s)
+						}
+					}
+					fmt.Println(reply.Filesname)
+					c.reducer[args.RuducerId] = 1
+					c.activeReducer[args.RuducerId] = 0
+					c.siminFiles[k] = 1
+					c.reducejob[args.RuducerId] = k
+					reply.Sim = k
+					break
+				}
 			}
-			c.reducer[args.RuducerId] = 1
 		}
 		c.mutex.Unlock()
 	} else if args.Applyorfinish == 1 {
 		c.mutex.Lock()
+		// fmt.Println("~", args.RuducerId, c.reducer[args.RuducerId])
+		// fmt.Println("************")
 		if c.reducer[args.RuducerId] != 3 {
-			c.reducetask--
 			c.reducer[args.RuducerId] = 2
-			for _, i := range args.FinishedFile {
-				c.intermediateFiles[i] = 2
-			}
-			reply.reserve = true
+			// fmt.Println(args.Sim)
+			c.siminFiles[args.Sim] = 2
+			delete(c.activeReducer, args.RuducerId)
+			delete(c.reducejob, args.RuducerId)
+			reply.Reserve = true
+		} else {
+			reply.Reserve = false
 		}
-		reply.reserve = false
-		fmt.Println(args.RuducerId)
-		fmt.Println(c.reducer)
-		//+* fmt.Println(c.intermediateFiles)
+		c.mutex.Unlock()
+	} else if args.Applyorfinish == 2{
+		c.mutex.Lock()
+		for _, v := range c.siminFiles{
+			if v != 2{
+				reply.Ret = false
+				c.mutex.Unlock()
+				return nil
+			}
+		}
+		reply.Ret = true
 		c.mutex.Unlock()
 	}
 	return nil
@@ -152,96 +205,83 @@ func (c *Coordinator) Done() bool {
 	// ret := false
 
 	c.mutex.Lock()
-	c.time++
-	if c.time >= c.interval {
-		fmt.Println(c.intermediateFiles)
-		fmt.Println(c.reducer)
-		for k, v := range c.files {
-			if v != 2 {
-				c.files[k] = 0
-			}
-		}
-		for k, v := range c.mapper {
-			if v == 1 {
-				c.mapper[k] = 3
-			}
-		}
+	// fmt.Println("siminFiles   ",c.siminFiles)
+	// fmt.Println("reducer      ",c.reducer)
+	// fmt.Println("activeReducer",c.activeReducer)
+	// fmt.Println("reducejob    ",c.reducejob)
+	// fmt.Println("Files   ",c.files)
+	// fmt.Println("mapper      ",c.mapper)
+	// fmt.Println("activeMapper",c.activeMapper)
+	// fmt.Println("mapjob    ",c.mapjob)
 
-		for k, v := range c.reducer {
-			if v == 1 {
-				// fmt.Println("**\n",)
-				var idleReduce byte
-				var k1 string
-				var v1 int
-				for k1, v1 = range c.reducer {
-					if v1 == 2 {
-						idleReduce = k1[len(k1)-1]
-					}
-				}
-				fmt.Println("--  ", k1)
-				c.reducer[k] = 3
-				for i := range c.intermediateFiles {
-					fmt.Println("==   ", i)
-					fmt.Println("++   ", k)
-					if i[len(i)-1] == k[len(k)-1] {
-						// fmt.Println(i, idleReduce-'0')
-						new := fmt.Sprintf("%v%v", i[0:len(i)-1], idleReduce-'0')
-						fmt.Println(new)
-						delete(c.intermediateFiles, i)
-						// c.intermediateFiles[i] = -1
-						c.intermediateFiles[new] = 0
-						c.reducer[k1] = 1
+	for k, v := range c.activeMapper {
+		if v+1 >= c.interval {
+			c.mapper[k] = 3
+			var i string
+			var j string
+			for i, j = range c.mapjob {
+				if i == k {
+					for x := range c.files {
+						if x == j {
+							c.files[x] = 0
+						}
 					}
 				}
 			}
+			delete(c.activeMapper, k)
+			delete(c.mapjob, k)
 		}
-		// for i, v := range c.intermediateFiles {
-		// 	if v == 1 {
-		// 		// fmt.Println(i, idleReduce)
-		// 		// new := fmt.Sprintf("%v%v", i[0:len(i)-1], idleReduce-'0')
-		// 		// fmt.Println(new)
-		// 		// delete(c.intermediateFiles, i)
-		// 		// c.intermediateFiles[new] = 0
-		// 		c.intermediateFiles[i] = 0
-		// 	}
-		// }
-		fmt.Println(c.intermediateFiles)
-		fmt.Println(c.reducer)
-		c.time = 0
-		time.Sleep(5*time.Minute)
+		c.activeMapper[k]++
 	}
-	if len(c.mapper) == 0 || len(c.reducer) == 0 {
-		c.mutex.Unlock()
-		return false
-	}
-	// for _, j := range c.mapper{
-	// 	if j == 0{
-	// 		c.mutex.Unlock()
-	// 		return false
-	// 	}
-	// }
-	// for _, j := range c.reducer{
-	// 	if j == 0{
-	// 		c.mutex.Unlock()
-	// 		return false
-	// 	}
-	// }
 
-	// fmt.Println(c.files)
-	// fmt.Println(c.intermediateFiles)
+	for k, v := range c.activeReducer {
+		if v+1 >= c.interval {
+			c.reducer[k] = 3
+			var i string
+			var j uint8
+			for i, j = range c.reducejob {
+				if i == k {
+					for x := range c.siminFiles {
+						if x == j {
+							c.siminFiles[x] = 0
+						}
+					}
+				}
+			}
+			delete(c.activeReducer, k)
+			delete(c.reducejob, k)
+		}
+		c.activeReducer[k]++
+	}
+	// fmt.Println("Files   ", c.files)
+	// fmt.Println("mapper      ", c.mapper)
+	// fmt.Println("activeMapper", c.activeMapper)
+	// fmt.Println("mapjob    ", c.mapjob)
+
+	// fmt.Println("siminFiles   ",c.siminFiles)
+	// fmt.Println("reducer      ",c.reducer)
+	// fmt.Println("activeReducer",c.activeReducer)
+	// fmt.Println("reducejob    ",c.reducejob)
+
 	for _, v := range c.files {
 		if v != 2 {
 			c.mutex.Unlock()
 			return false
 		}
 	}
-
-	for _, v := range c.intermediateFiles {
+	for _, v := range c.siminFiles {
 		if v != 2 {
 			c.mutex.Unlock()
 			return false
 		}
 	}
+
+	// for _, v := range c.intermediateFiles {
+	// 	if v != 2 {
+	// 		c.mutex.Unlock()
+	// 		return false
+	// 	}
+	// }
 	c.mutex.Unlock()
 	return true
 }
@@ -254,19 +294,22 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 	c.files = make(map[string]int)
-	c.intermediateFiles = make(map[string]int)
+	// c.intermediateFiles = make(map[string]int)
 	c.mapper = make(map[string]int)
+	c.mapjob = make(map[string]string)
+	c.activeMapper = make(map[string]int)
+
 	c.reducer = make(map[string]int)
-	c.outfiles = make(map[string]int)
-	c.maptask = 0
-	c.reducetask = nReduce
+	c.siminFiles = make(map[uint8]int)
+	c.activeReducer = make(map[string]int)
+	c.reducejob = make(map[string]uint8)
+
 	c.maptaskFinished = 0
 	c.reducetaskFinished = 0
 	c.interval = 10
-	c.time = 0
+	// c.time = 0
 	for _, filename := range files {
 		c.files[filename] = 0
-		c.maptask++
 	}
 
 	c.server()

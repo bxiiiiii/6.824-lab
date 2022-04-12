@@ -20,7 +20,8 @@ type MapArgs struct {
 	MapperId string
 	Applyorfinish int
 	FinishedFile string
-	IntermediateFilename map[string]int
+	IntermediateFilename []string
+	// IntermediateFilename map[string]int
 	// FileSize int
 }
 
@@ -34,13 +35,16 @@ type ReduceArgs struct {
 	RuducerId string
 	Applyorfinish int
 	FinishedFile []string
+	Sim uint8
 	// outfile map[string]int
 }
 
 type ReduceReply struct{
 	// Filename string
 	Filesname []string
-	reserve bool
+	Reserve bool
+	Sim uint8
+	Ret bool
 }
 // Add your RPC definitions here.
 
