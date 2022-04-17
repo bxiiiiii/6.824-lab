@@ -19,13 +19,14 @@ package raft
 
 import (
 	//	"bytes"
+	"math/rand"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	//	"6.824/labgob"
 	"6.824/labrpc"
 )
-
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -64,7 +65,27 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+	//2A
+	currentTerm int
+	votedFor    int
+	log         map[string]int
+	state       int
+	leader      int
+	votes       int
+	done		bool
+
+	commitIndex int
+	lastApplied int
+
+	nextIndex  map[int]int
+	matchIndex map[int]int
 }
+
+const (
+	Sfollower = 0
+	Scandidate
+	Sleader
+)
 
 // return currentTerm and whether this server
 // believes it is the leader.
@@ -92,7 +113,6 @@ func (rf *Raft) persist() {
 	// rf.persister.SaveRaftState(data)
 }
 
-
 //
 // restore previously persisted state.
 //
@@ -115,7 +135,6 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
 //
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
@@ -136,13 +155,17 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	//2A
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 //
@@ -151,6 +174,22 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term        int
+	VoteGranted bool
+}
+
+type AppendEntiresArgs struct {
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      map[string]int
+	LeaderCommit int
+}
+
+type AppendEntiresReply struct {
+	Term    int
+	Success bool
 }
 
 //
@@ -158,6 +197,25 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	//2A
+	if rf.currentTerm < args.Term {
+		rf.currentTerm = args.Term
+		rf.votedFor = args.CandidateId
+		rf.becomeFowllower(args.CandidateId)
+		reply.Term = args.Term
+		reply.VoteGranted = true
+	} else if rf.currentTerm > args.Term {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+	} else {
+		reply.Term = args.Term
+		//logTerm and logIndex compare candidate
+		if rf.votedFor == -1 || rf.votedFor == args.CandidateId{
+			reply.VoteGranted = true
+		} else {
+			reply.VoteGranted = false
+		}
+	}
 }
 
 //
@@ -194,6 +252,14 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntiresReply, reply *AppendEntiresReply) bool{
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply){
+
+}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -215,7 +281,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
 
 	return index, term, isLeader
 }
@@ -249,7 +314,17 @@ func (rf *Raft) ticker() {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
-
+		rf.mu.Lock()
+		state := rf.state
+		rf.mu.Unlock()
+		if state == Sfollower{
+			rand.Seed(time.Now().UnixMicro())
+			r := rand.Intn(150) + 150
+			time.Sleep(time.Duration(r) * time.Microsecond)
+			rf.becomeCandidate()
+		} else if state == Scandidate{
+			rf.becomeFowllower()
+		}
 	}
 }
 
@@ -279,6 +354,53 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
-
 	return rf
+}
+
+func (rf *Raft) becomeLeader() {
+	rf.state = Sleader
+	
+	for i := range rf.peers{
+		if(i == rf.me){
+			continue
+		}
+		args := RequestVoteArgs{}
+		reply := RequestVoteReply{}
+		args.CandidateId = rf.me
+		args.Term = rf.currentTerm
+		// args.LastLogTerm = 
+		// args.LastLogIndex = 
+		rf.sendRequestVote(i, &args, &reply)
+		rf.nextIndex[i] = rf.commitIndex+1
+		rf.matchIndex[i] = 0
+	}
+}
+func (rf *Raft) becomeCandidate() {
+	rf.currentTerm++
+	rf.votedFor = rf.me
+	rf.state = Scandidate
+	rf.votes = 1
+
+	for i := range rf.peers {
+		args := RequestVoteArgs{}
+		reply := RequestVoteReply{}
+		args.CandidateId = rf.me
+		args.Term = rf.currentTerm
+		// args.LastLogTerm = 
+		// args.LastLogIndex = 
+		rf.sendRequestVote(i, &args, &reply)
+		if reply.VoteGranted == true{
+			rf.votes++
+		} else {
+			if reply.Term > rf.currentTerm{
+				rf.becomeFowllower()
+			}
+		}
+	}
+
+}
+
+func (rf *Raft) becomeFowllower(leader int) {
+	rf.state = Sfollower
+	rf.leader = leader
 }
