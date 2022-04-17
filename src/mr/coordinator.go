@@ -1,7 +1,7 @@
 package mr
 
 import (
-	"fmt"
+	// "fmt"
 	"io/ioutil"
 	"log"
 	"net"
@@ -9,7 +9,6 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
-	// "time"
 )
 
 type Coordinator struct {
@@ -20,7 +19,6 @@ type Coordinator struct {
 	mapjob       map[string]string
 	activeMapper map[string]int
 
-	// intermediateFiles  map[string]int
 	intermediateFiles []string
 	reducer           map[string]int
 	reducejob         map[string]uint8
@@ -29,7 +27,7 @@ type Coordinator struct {
 	maptaskFinished    int
 	reducetaskFinished int
 	interval           int
-	// time               int
+
 	mutex sync.Mutex
 }
 
@@ -57,7 +55,6 @@ func (c *Coordinator) Map(args *MapArgs, reply *MapReply) error {
 		}
 		if c.mapper[args.MapperId] != 3 {
 			for filename, v = range c.files {
-				// fmt.Println(c.files)
 				if v == 0 {
 					reply.Filename = filename
 					c.mapper[args.MapperId] = 1
@@ -93,9 +90,6 @@ func (c *Coordinator) Map(args *MapArgs, reply *MapReply) error {
 			delete(c.activeMapper, args.MapperId)
 			delete(c.mapjob, args.MapperId)
 		}
-		//+* fmt.Println(args.MapperId)
-		// fmt.Println(c.files)
-		// fmt.Println(c.intermediateFiles)
 		c.mutex.Unlock()
 	} else if args.Applyorfinish == 2 {
 		c.mutex.Lock()
@@ -113,7 +107,6 @@ func (c *Coordinator) Map(args *MapArgs, reply *MapReply) error {
 }
 
 func (c *Coordinator) Reduce(args *ReduceArgs, reply *ReduceReply) error {
-	// fmt.Println("~ ",args.Applyorfinish)
 	if args.Applyorfinish == 0 {
 		c.mutex.Lock()
 		ice := true
@@ -127,17 +120,13 @@ func (c *Coordinator) Reduce(args *ReduceArgs, reply *ReduceReply) error {
 			c.reducer[args.RuducerId] = 0
 		}
 		if c.reducer[args.RuducerId] != 3 {
-			fmt.Println(c.siminFiles)
-			fmt.Println(c.reducejob)
 			for k, v := range c.siminFiles {
-				fmt.Println(c.siminFiles)
 				if v == 0 {
 					for _, s := range c.intermediateFiles {
 						if s[len(s)-1] == k+'0' {
 							reply.Filesname = append(reply.Filesname, s)
 						}
 					}
-					fmt.Println(reply.Filesname)
 					c.reducer[args.RuducerId] = 1
 					c.activeReducer[args.RuducerId] = 0
 					c.siminFiles[k] = 1
@@ -150,11 +139,8 @@ func (c *Coordinator) Reduce(args *ReduceArgs, reply *ReduceReply) error {
 		c.mutex.Unlock()
 	} else if args.Applyorfinish == 1 {
 		c.mutex.Lock()
-		// fmt.Println("~", args.RuducerId, c.reducer[args.RuducerId])
-		// fmt.Println("************")
 		if c.reducer[args.RuducerId] != 3 {
 			c.reducer[args.RuducerId] = 2
-			// fmt.Println(args.Sim)
 			c.siminFiles[args.Sim] = 2
 			delete(c.activeReducer, args.RuducerId)
 			delete(c.reducejob, args.RuducerId)
@@ -163,10 +149,10 @@ func (c *Coordinator) Reduce(args *ReduceArgs, reply *ReduceReply) error {
 			reply.Reserve = false
 		}
 		c.mutex.Unlock()
-	} else if args.Applyorfinish == 2{
+	} else if args.Applyorfinish == 2 {
 		c.mutex.Lock()
-		for _, v := range c.siminFiles{
-			if v != 2{
+		for _, v := range c.siminFiles {
+			if v != 2 {
 				reply.Ret = false
 				c.mutex.Unlock()
 				return nil
@@ -178,9 +164,6 @@ func (c *Coordinator) Reduce(args *ReduceArgs, reply *ReduceReply) error {
 	return nil
 }
 
-// func (c *Coordinator) Finished(args *ReduceArgs, reply *ReduceReply) error {
-
-// }
 //
 // start a thread that listens for RPCs from worker.go
 //
@@ -202,17 +185,7 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
-	// ret := false
-
 	c.mutex.Lock()
-	// fmt.Println("siminFiles   ",c.siminFiles)
-	// fmt.Println("reducer      ",c.reducer)
-	// fmt.Println("activeReducer",c.activeReducer)
-	// fmt.Println("reducejob    ",c.reducejob)
-	// fmt.Println("Files   ",c.files)
-	// fmt.Println("mapper      ",c.mapper)
-	// fmt.Println("activeMapper",c.activeMapper)
-	// fmt.Println("mapjob    ",c.mapjob)
 
 	for k, v := range c.activeMapper {
 		if v+1 >= c.interval {
@@ -253,15 +226,6 @@ func (c *Coordinator) Done() bool {
 		}
 		c.activeReducer[k]++
 	}
-	// fmt.Println("Files   ", c.files)
-	// fmt.Println("mapper      ", c.mapper)
-	// fmt.Println("activeMapper", c.activeMapper)
-	// fmt.Println("mapjob    ", c.mapjob)
-
-	// fmt.Println("siminFiles   ",c.siminFiles)
-	// fmt.Println("reducer      ",c.reducer)
-	// fmt.Println("activeReducer",c.activeReducer)
-	// fmt.Println("reducejob    ",c.reducejob)
 
 	for _, v := range c.files {
 		if v != 2 {
@@ -276,12 +240,6 @@ func (c *Coordinator) Done() bool {
 		}
 	}
 
-	// for _, v := range c.intermediateFiles {
-	// 	if v != 2 {
-	// 		c.mutex.Unlock()
-	// 		return false
-	// 	}
-	// }
 	c.mutex.Unlock()
 	return true
 }
@@ -294,7 +252,6 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 	c.files = make(map[string]int)
-	// c.intermediateFiles = make(map[string]int)
 	c.mapper = make(map[string]int)
 	c.mapjob = make(map[string]string)
 	c.activeMapper = make(map[string]int)
@@ -307,7 +264,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.maptaskFinished = 0
 	c.reducetaskFinished = 0
 	c.interval = 10
-	// c.time = 0
+
 	for _, filename := range files {
 		c.files[filename] = 0
 	}

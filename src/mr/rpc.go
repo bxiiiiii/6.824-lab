@@ -21,8 +21,6 @@ type MapArgs struct {
 	Applyorfinish int
 	FinishedFile string
 	IntermediateFilename []string
-	// IntermediateFilename map[string]int
-	// FileSize int
 }
 
 type MapReply struct {
@@ -36,11 +34,9 @@ type ReduceArgs struct {
 	Applyorfinish int
 	FinishedFile []string
 	Sim uint8
-	// outfile map[string]int
 }
 
 type ReduceReply struct{
-	// Filename string
 	Filesname []string
 	Reserve bool
 	Sim uint8

@@ -41,7 +41,7 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	num_mapper := 8
+	num_mapper := 1
 	for i := 0; i < num_mapper; i++ {
 		go func(i int) {
 			defer func() {
@@ -57,14 +57,13 @@ func Worker(mapf func(string, string) []KeyValue,
 				args.Applyorfinish = 0
 				args.MapperId = fmt.Sprintf("mapper-%v-%v", pid, i)
 				MapCall(args, &reply)
-				fmt.Println(reply.Filename)
 				if reply.Filename != "" {
 					jobcount++
 					imfiles := make(map[string]int)
 					kva := mapf(reply.Filename, string(reply.Content))
 					for j := 0; j < len(kva); j++ {
 						rid := ihash(kva[j].Key) % 10
-						oname := fmt.Sprintf("mr-%v:%v:%v-%v", pid, i, jobcount,rid)
+						oname := fmt.Sprintf("mr-%v:%v:%v-%v", pid, i, jobcount, rid)
 						imfiles[oname] = 0
 						file, _ := os.OpenFile(oname, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
 						enc := json.NewEncoder(file)
@@ -81,7 +80,7 @@ func Worker(mapf func(string, string) []KeyValue,
 					args2.Applyorfinish = 1
 					args2.FinishedFile = reply.Filename
 					args2.MapperId = fmt.Sprintf("mapper-%v-%v", pid, i)
-					for i := range imfiles{
+					for i := range imfiles {
 						args2.IntermediateFilename = append(args2.IntermediateFilename, i)
 					}
 					MapCall(args2, &reply2)
@@ -101,7 +100,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			break
 		}
 	}
-	// os.Exit(0)
 
 	num_reducer := 1
 	for i := 0; i < num_reducer; i++ {
@@ -113,7 +111,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			}()
 			jobcount := 0
 			for {
-				// finishedfiles  []string
 				var oname string
 				pid := os.Getpid()
 				reply := ReduceReply{}
@@ -122,7 +119,6 @@ func Worker(mapf func(string, string) []KeyValue,
 				args.RuducerId = fmt.Sprintf("reducer-%v-%v", pid, i)
 				ReduceCall(args, &reply)
 				if len(reply.Filesname) != 0 {
-					// fmt.Println("***",args.RuducerId,reply.Filesname)
 					jobcount++
 					sim := reply.Sim
 					oname = fmt.Sprintf("mr-OUT-%v-%v-%v", pid, i, jobcount)
@@ -167,15 +163,12 @@ func Worker(mapf func(string, string) []KeyValue,
 					args2.Sim = sim
 
 					ReduceCall(args2, &reply2)
-					fmt.Println(args2.RuducerId, reply2.Reserve)
 					if reply2.Reserve {
 						newname := fmt.Sprintf("mr-out-%v-%v-%v", pid, i, jobcount)
 						os.Rename(oname, newname)
 					}
-
-					//+* fmt.Println("----\n", args2.FinishedFile)
 				} else {
-					time.Sleep(10*time.Second)
+					time.Sleep(10 * time.Second)
 				}
 			}
 		}(i)
@@ -186,7 +179,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		reply := ReduceReply{}
 		args.Applyorfinish = 2
 		ReduceCall(args, &reply)
-		if reply.Ret{
+		if reply.Ret {
 			break
 		}
 	}
