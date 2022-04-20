@@ -73,7 +73,7 @@ type Raft struct {
 	leader      int
 	votes       int
 	done        bool
-	timerMutex sync.Mutex
+	timerMutex  sync.Mutex
 
 	commitIndex int
 	lastApplied int
@@ -218,6 +218,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	//2A
 	DEBUG(dVote, "S%v C%v asking for vote", rf.me, args.CandidateId)
+	rf.mu.Lock()
 	if rf.currentTerm < args.Term {
 		DEBUG(dTerm, "S%v Term is lower, updating (%v < %v)", rf.me, rf.currentTerm, args.Term)
 		rf.becomeFowllower(args.CandidateId, args.Term)
@@ -237,6 +238,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 	}
 	DEBUG(dVote, "S%v T%v Granting Vote to S%v", rf.me, rf.currentTerm, rf.votedFor)
+	rf.mu.Unlock()
 }
 
 //
@@ -279,6 +281,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntiresArgs, reply *Ap
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply) {
+	rf.mu.Lock()
 	if args.Term >= rf.currentTerm {
 		if len(args.AppendEntries) == 0 && rf.currentTerm == args.Term {
 			DEBUG(dLog, "S%v get heartbeat from S%v at T: %v", rf.me, args.LeaderId, args.Term)
@@ -289,7 +292,7 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 		reply.Success = false
 		reply.Term = rf.currentTerm
 	}
-
+	rf.mu.Unlock()
 }
 
 //
@@ -342,7 +345,7 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// start:=time.Now().UnixMilli()
-		// DEBUG(dTimer, "S%v start: %v", rf.me, start)
+
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
@@ -350,18 +353,19 @@ func (rf *Raft) ticker() {
 		rf.mu.Lock()
 		if rf.timer >= rf.timeout {
 			if isleader {
-				go rf.becomeLeader()
+				rf.timer = 0
+				go func() {
+					rf.sendheartbeat(rf.currentTerm)
+				}()
 			} else {
-				go rf.becomeCandidate()
+				rf.becomeCandidate()
+				go func() {
+					rf.sendvote(rf.currentTerm)
+				}()
 			}
 		}
-		// ti:=time.Since(start).Milliseconds()
-		
 		rf.timer++
-		// 
-		// end := time.Now().UnixMilli()
-		// DEBUG(dError, "S%v timer: %v end: %v", rf.me, rf.timer, end)
-		// rf.timer += int(end) - int(start)
+		// DEBUG(dTimer, "S%v timer: %v", rf.me, rf.timer)
 		rf.mu.Unlock()
 		time.Sleep(time.Millisecond)
 	}
@@ -380,7 +384,6 @@ func (rf *Raft) ticker() {
 //
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	LOGinit()
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
@@ -388,6 +391,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 	//2A
+	LOGinit()
 	rf.becomeFowllower(-1, 0)
 	rf.currentTerm = 0
 	rf.votedFor = -1
@@ -399,29 +403,59 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
-
+	rf.mu.Lock()
 	DEBUG(dClient, "S%v Started at T:%v TI: %v", me, rf.currentTerm, rf.timeout)
-
+		rf.mu.Unlock()
 	return rf
 }
 
 func (rf *Raft) becomeLeader() {
-	rf.mu.Lock()
-	rf.state = Sleader
 	rf.timeout = 95
 	rf.timer = 0
-	tmterm := rf.currentTerm
-	rf.mu.Unlock()
-	var cond sync.WaitGroup
+	for i := range rf.matchIndex {
+		delete(rf.matchIndex, rf.matchIndex[i])
+	}
+	for i := range rf.nextIndex {
+		delete(rf.nextIndex, rf.nextIndex[i])
+	}
+	rf.state = Sleader
+}
+func (rf *Raft) becomeCandidate() {
+	rand.Seed(time.Now().Local().UnixMicro())
+	rf.currentTerm++
+	rf.votedFor = rf.me
+	rf.state = Scandidate
+	rf.votes = 1
+	rf.timeout = rand.Intn(200) + 200
+	rf.timer = 0
+	// tmterm := rf.currentTerm
+	DEBUG(dTimer, "S%v timeout Reset: %v", rf.me, rf.timeout)
+	DEBUG(dTerm, "S%v Converting to Candidate, calling election T:%v", rf.me, rf.currentTerm)
+
+}
+
+func (rf *Raft) becomeFowllower(leaderId int, Term int) {
+	rand.Seed(time.Now().Local().UnixMicro())
+	if Term > rf.currentTerm {
+		rf.votedFor = -1
+		rf.currentTerm = Term
+	}
+	rf.state = Sfollower
+	rf.leader = leaderId
+
+	rf.timeout = rand.Intn(200) + 200
+	rf.timer = 0
+	DEBUG(dTimer, "S%v timeout Reset: %v", rf.me, rf.timeout)
+}
+
+func (rf *Raft) sendheartbeat(tmterm int) {
 	DEBUG(dTimer, "S%v Broadcast, resetting HTB", rf.me)
 	DEBUG(dTimer, "S%v HTB time: %v", rf.me, time.Now().UnixMilli())
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
-		cond.Add(1)
-		go func(i int) {
-
+		go func(i int, tmterm int) {
 			args := AppendEntiresArgs{}
 			reply := AppendEntiresReply{}
 			args.LeaderId = rf.me
@@ -445,50 +479,34 @@ func (rf *Raft) becomeLeader() {
 			if isleader && term == tmterm {
 				DEBUG(dLog, "S%v <- S%v %v Append MI: %v", rf.me, i, reply.Success, reply.Term)
 				if reply.Term > term {
+					rf.mu.Lock()
 					rf.becomeFowllower(-1, reply.Term)
+					rf.mu.Unlock()
+				} else {
+					rf.mu.Lock()
+					rf.nextIndex[i] = rf.commitIndex + 1
+					rf.matchIndex[i] = 0
+					rf.mu.Unlock()
 				}
-				rf.mu.Lock()
-				rf.nextIndex[i] = rf.commitIndex + 1
-				rf.matchIndex[i] = 0
-				rf.mu.Unlock()
 			}
-		
-			cond.Done()
-		}(i)
+		}(i, tmterm)
 	}
-	cond.Wait()
 }
-func (rf *Raft) becomeCandidate() {
-	rand.Seed(time.Now().Local().UnixMicro())
+
+func (rf *Raft) sendvote(tmTerm int) {
 	var lock sync.Mutex
 	var cond sync.WaitGroup
-	rf.mu.Lock()
-	rf.currentTerm++
-	tmTerm := rf.currentTerm
-	rf.votedFor = rf.me
-	rf.state = Scandidate
-	rf.votes = 1
-	rf.timeout = rand.Intn(200) + 200
-	rf.timer = 0
-	// tmterm := rf.currentTerm
-	rf.mu.Unlock()
-	DEBUG(dTimer, "S%v timeout Reset: %v", rf.me, rf.timeout)
-	DEBUG(dTerm, "S%v Converting to Candidate, calling election T:%v", rf.me, rf.currentTerm)
-
 	truevotes := 1
-	falsevotes := 0
-
+	cond.Add(len(rf.peers) - 1)
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
-		cond.Add(1)
 		go func(i int) {
 			args := RequestVoteArgs{}
 			reply := RequestVoteReply{}
 			args.CandidateId = rf.me
 			args.Term = tmTerm
-
 			args.LastLogIndex = rf.commitIndex
 			if rf.commitIndex == 0 {
 				args.LastLogTerm = 0
@@ -502,60 +520,29 @@ func (rf *Raft) becomeCandidate() {
 			// }
 			if reply.VoteGranted {
 				DEBUG(dVote, "S%v <- S%v Got vote", rf.me, i)
-				// atomic.AddInt64(&truevotes, 1)
 				lock.Lock()
 				truevotes++
+				num := len(rf.peers)
+				if truevotes > num/2 {
+					rf.mu.Lock()
+					if tmTerm == rf.currentTerm && rf.state == Scandidate{
+						DEBUG(dLeader, "S%v Achieved Majority for T:%v(%v %v), converting to Leader", rf.me, rf.currentTerm, truevotes, num)
+						rf.becomeLeader()
+						rf.sendheartbeat(rf.currentTerm)
+					}
+					rf.mu.Unlock()
+				}
 				lock.Unlock()
 			} else {
+				rf.mu.Lock()
 				if reply.Term > rf.currentTerm {
 					rf.becomeFowllower(i, reply.Term)
-				} else {
-					lock.Lock()
-					falsevotes++
-					// num := len(rf.peers)
-					// if int(truevotes) > num/2 {
-					// 	rf.becomeFowllower(reply.)
-					// 	return
-					// }
-					lock.Unlock()
 				}
+				rf.mu.Unlock()
 			}
 			cond.Done()
 		}(i)
 	}
 
-	for {
-		num := len(rf.peers)
-		lock.Lock()
-		if truevotes > num/2 {
-			if tmTerm == rf.currentTerm {
-				DEBUG(dLeader, "S%v Achieved Majority for T:%v(%v %v), converting to Leader", rf.me, rf.currentTerm, truevotes, num)
-				rf.becomeLeader()
-				lock.Unlock()
-				break
-			}
-		}
-		lock.Unlock()
-	}
 	cond.Wait()
-	term, isleader := rf.GetState()
-	if !isleader {
-		DEBUG(dVote, "S%v election failed at T: %v", rf.me, term)
-	}
-}
-
-func (rf *Raft) becomeFowllower(leaderId int, Term int) {
-	rand.Seed(time.Now().Local().UnixMicro())
-	rf.mu.Lock()
-	if Term > rf.currentTerm {
-		rf.votedFor = -1
-		rf.currentTerm = Term
-	}
-	rf.state = Sfollower
-	rf.leader = leaderId
-
-	rf.timeout = rand.Intn(200) + 200
-	rf.timer = 0
-	rf.mu.Unlock()
-	DEBUG(dTimer, "S%v timeout Reset: %v", rf.me, rf.timeout)
 }
