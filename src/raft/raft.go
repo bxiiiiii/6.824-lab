@@ -73,6 +73,7 @@ type Raft struct {
 	leader      int
 	votes       int
 	done        bool
+	timerMutex sync.Mutex
 
 	commitIndex int
 	lastApplied int
@@ -85,9 +86,9 @@ type Raft struct {
 }
 
 type Entries struct {
-	log   string
-	term  int
-	index int
+	Log   string
+	Term  int
+	Index int
 }
 
 const (
@@ -197,12 +198,12 @@ type RequestVoteReply struct {
 }
 
 type AppendEntiresArgs struct {
-	Term         int
-	LeaderId     int
-	PrevLogIndex int
-	PrevLogTerm  int
-	Entries      map[string]int
-	LeaderCommit int
+	Term          int
+	LeaderId      int
+	PrevLogIndex  int
+	PrevLogTerm   int
+	AppendEntries []Entries
+	LeaderCommit  int
 }
 
 type AppendEntiresReply struct {
@@ -219,10 +220,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	DEBUG(dVote, "S%v C%v asking for vote", rf.me, args.CandidateId)
 	if rf.currentTerm < args.Term {
 		DEBUG(dTerm, "S%v Term is lower, updating (%v < %v)", rf.me, rf.currentTerm, args.Term)
-		rf.currentTerm = args.Term
+		rf.becomeFowllower(args.CandidateId, args.Term)
 		rf.votedFor = args.CandidateId
-		rf.becomeFowllower(args.CandidateId)
-		reply.Term = args.Term
 		reply.VoteGranted = true
 	} else if rf.currentTerm > args.Term {
 		reply.Term = rf.currentTerm
@@ -231,6 +230,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = args.Term
 		//logTerm and logIndex compare candidate
 		if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+			rf.votedFor = args.CandidateId
 			reply.VoteGranted = true
 		} else {
 			reply.VoteGranted = false
@@ -279,10 +279,17 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntiresArgs, reply *Ap
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply) {
-	if len(args.Entries) == 0 {
-		rf.becomeFowllower(args.LeaderId)
-		reply.Success = true
+	if args.Term >= rf.currentTerm {
+		if len(args.AppendEntries) == 0 && rf.currentTerm == args.Term {
+			DEBUG(dLog, "S%v get heartbeat from S%v at T: %v", rf.me, args.LeaderId, args.Term)
+			rf.becomeFowllower(args.LeaderId, args.Term)
+			reply.Success = true
+		}
+	} else {
+		reply.Success = false
+		reply.Term = rf.currentTerm
 	}
+
 }
 
 //
@@ -334,12 +341,13 @@ func (rf *Raft) killed() bool {
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-
+		// start:=time.Now().UnixMilli()
+		// DEBUG(dTimer, "S%v start: %v", rf.me, start)
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
 		_, isleader := rf.GetState()
-
+		rf.mu.Lock()
 		if rf.timer >= rf.timeout {
 			if isleader {
 				go rf.becomeLeader()
@@ -347,11 +355,15 @@ func (rf *Raft) ticker() {
 				go rf.becomeCandidate()
 			}
 		}
-
-		time.Sleep(time.Millisecond)
-		rf.mu.Lock()
+		// ti:=time.Since(start).Milliseconds()
+		
 		rf.timer++
+		// 
+		// end := time.Now().UnixMilli()
+		// DEBUG(dError, "S%v timer: %v end: %v", rf.me, rf.timer, end)
+		// rf.timer += int(end) - int(start)
 		rf.mu.Unlock()
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -376,7 +388,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 	//2A
-	rf.becomeFowllower(-1)
+	rf.becomeFowllower(-1, 0)
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.votes = 0
@@ -388,7 +400,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
-	DEBUG(dClient, "S%v Started at T:%v TI: %v", me, rf.currentTerm,rf.timeout)
+	DEBUG(dClient, "S%v Started at T:%v TI: %v", me, rf.currentTerm, rf.timeout)
 
 	return rf
 }
@@ -398,44 +410,67 @@ func (rf *Raft) becomeLeader() {
 	rf.state = Sleader
 	rf.timeout = 95
 	rf.timer = 0
+	tmterm := rf.currentTerm
 	rf.mu.Unlock()
-
+	var cond sync.WaitGroup
 	DEBUG(dTimer, "S%v Broadcast, resetting HTB", rf.me)
-
+	DEBUG(dTimer, "S%v HTB time: %v", rf.me, time.Now().UnixMilli())
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
-		args := AppendEntiresArgs{}
-		reply := AppendEntiresReply{}
-		args.LeaderId = rf.me
-		args.Term = rf.currentTerm
-		commitid := 0
-		if len(rf.log) > 0 {
-			commitid = rf.log[len(rf.log)-1].index
-		} else {
-			commitid = 0
-		}
-		args.LeaderCommit = commitid
-		args.PrevLogIndex = 0
-		args.PrevLogTerm = 0
-		DEBUG(dLog, "S%v -> S%v Sending PLI: %v PLT:%v LC:%v - %v", rf.me, i, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.Entries)
-		rf.sendAppendEntries(i, &args, &reply)
-		DEBUG(dLog, "S%v <- S%v %v Append MI: %v", rf.me, i, reply.Success, reply.Term)
-		rf.nextIndex[i] = rf.commitIndex + 1
-		rf.matchIndex[i] = 0
+		cond.Add(1)
+		go func(i int) {
+
+			args := AppendEntiresArgs{}
+			reply := AppendEntiresReply{}
+			args.LeaderId = rf.me
+			args.Term = tmterm
+			commitid := 0
+			if len(rf.log) > 0 {
+				commitid = rf.log[len(rf.log)-1].Index
+			} else {
+				commitid = 0
+			}
+			args.LeaderCommit = commitid
+			args.PrevLogIndex = 0
+			args.PrevLogTerm = 0
+			DEBUG(dLog, "S%v -> S%v SendingHTB PLI: %v PLT:%v LC:%v - %v at T: %v", rf.me, i, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.AppendEntries, tmterm)
+			rf.sendAppendEntries(i, &args, &reply)
+			// ok := rf.sendAppendEntries(i, &args, &reply)
+			// if !ok {
+			// 	DEBUG(dError, "S%v -> S%v sendingHTB failed at T: %v", rf.me, i, rf.currentTerm)
+			// }
+			term, isleader := rf.GetState()
+			if isleader && term == tmterm {
+				DEBUG(dLog, "S%v <- S%v %v Append MI: %v", rf.me, i, reply.Success, reply.Term)
+				if reply.Term > term {
+					rf.becomeFowllower(-1, reply.Term)
+				}
+				rf.mu.Lock()
+				rf.nextIndex[i] = rf.commitIndex + 1
+				rf.matchIndex[i] = 0
+				rf.mu.Unlock()
+			}
+		
+			cond.Done()
+		}(i)
 	}
+	cond.Wait()
 }
 func (rf *Raft) becomeCandidate() {
 	rand.Seed(time.Now().Local().UnixMicro())
+	var lock sync.Mutex
+	var cond sync.WaitGroup
 	rf.mu.Lock()
 	rf.currentTerm++
 	tmTerm := rf.currentTerm
 	rf.votedFor = rf.me
 	rf.state = Scandidate
 	rf.votes = 1
-	rf.timeout = rand.Intn(200) + 150
+	rf.timeout = rand.Intn(200) + 200
 	rf.timer = 0
+	// tmterm := rf.currentTerm
 	rf.mu.Unlock()
 	DEBUG(dTimer, "S%v timeout Reset: %v", rf.me, rf.timeout)
 	DEBUG(dTerm, "S%v Converting to Candidate, calling election T:%v", rf.me, rf.currentTerm)
@@ -447,54 +482,79 @@ func (rf *Raft) becomeCandidate() {
 		if i == rf.me {
 			continue
 		}
-		args := RequestVoteArgs{}
-		reply := RequestVoteReply{}
-		args.CandidateId = rf.me
-		args.Term = tmTerm
+		cond.Add(1)
+		go func(i int) {
+			args := RequestVoteArgs{}
+			reply := RequestVoteReply{}
+			args.CandidateId = rf.me
+			args.Term = tmTerm
 
-		args.LastLogIndex = rf.commitIndex
-		if rf.commitIndex == 0 {
-			args.LastLogTerm = 0
-		} else {
-			args.LastLogTerm = rf.log[rf.commitIndex].term
-		}
-		ok := rf.sendRequestVote(i, &args, &reply)
-		if ok == false{
-			DEBUG(dError, "S%v -> %v vote rpc failed", rf.me, i)
-		}
-		if reply.VoteGranted {
-			DEBUG(dVote, "S%v <- S%v Got vote", rf.me, i)
-			truevotes++
-		} else {
-			if reply.Term > rf.currentTerm {
-				rf.becomeFowllower(-1)
-				return
+			args.LastLogIndex = rf.commitIndex
+			if rf.commitIndex == 0 {
+				args.LastLogTerm = 0
 			} else {
-				falsevotes++
-				num := len(rf.peers)
-				if truevotes > num/2 {
-					rf.becomeFowllower(-1)
-					return
+				args.LastLogTerm = rf.log[rf.commitIndex].Term
+			}
+			rf.sendRequestVote(i, &args, &reply)
+			// ok := rf.sendRequestVote(i, &args, &reply)
+			// if !ok {
+			// 	DEBUG(dError, "S%v -> S%v voterpc failed at T: %v", rf.me, i, rf.currentTerm)
+			// }
+			if reply.VoteGranted {
+				DEBUG(dVote, "S%v <- S%v Got vote", rf.me, i)
+				// atomic.AddInt64(&truevotes, 1)
+				lock.Lock()
+				truevotes++
+				lock.Unlock()
+			} else {
+				if reply.Term > rf.currentTerm {
+					rf.becomeFowllower(i, reply.Term)
+				} else {
+					lock.Lock()
+					falsevotes++
+					// num := len(rf.peers)
+					// if int(truevotes) > num/2 {
+					// 	rf.becomeFowllower(reply.)
+					// 	return
+					// }
+					lock.Unlock()
 				}
 			}
-		}
+			cond.Done()
+		}(i)
 	}
 
-	num := len(rf.peers)
-	if truevotes > num/2 {
-		if tmTerm == rf.currentTerm {
-			DEBUG(dLeader, "S%v Achieved Majority for T:%v(%v %v), converting to Leader", rf.me, rf.currentTerm, truevotes, num)
-			rf.becomeLeader()
+	for {
+		num := len(rf.peers)
+		lock.Lock()
+		if truevotes > num/2 {
+			if tmTerm == rf.currentTerm {
+				DEBUG(dLeader, "S%v Achieved Majority for T:%v(%v %v), converting to Leader", rf.me, rf.currentTerm, truevotes, num)
+				rf.becomeLeader()
+				lock.Unlock()
+				break
+			}
 		}
-	} 
+		lock.Unlock()
+	}
+	cond.Wait()
+	term, isleader := rf.GetState()
+	if !isleader {
+		DEBUG(dVote, "S%v election failed at T: %v", rf.me, term)
+	}
 }
 
-func (rf *Raft) becomeFowllower(leader int) {
+func (rf *Raft) becomeFowllower(leaderId int, Term int) {
 	rand.Seed(time.Now().Local().UnixMicro())
 	rf.mu.Lock()
+	if Term > rf.currentTerm {
+		rf.votedFor = -1
+		rf.currentTerm = Term
+	}
 	rf.state = Sfollower
-	rf.leader = leader
-	rf.timeout = rand.Intn(200) + 150
+	rf.leader = leaderId
+
+	rf.timeout = rand.Intn(200) + 200
 	rf.timer = 0
 	rf.mu.Unlock()
 	DEBUG(dTimer, "S%v timeout Reset: %v", rf.me, rf.timeout)
