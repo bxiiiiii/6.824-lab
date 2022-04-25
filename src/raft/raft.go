@@ -70,10 +70,10 @@ type Raft struct {
 	votedFor    int
 	log         []Entries
 	state       int
-	leader      int
-	votes       int
-	done        bool
-	timerMutex  sync.Mutex
+
+	leader int
+	votes  int
+	done   bool
 
 	commitIndex int
 	lastApplied int
@@ -86,9 +86,9 @@ type Raft struct {
 }
 
 type Entries struct {
-	Log   string
-	Term  int
-	Index int
+	Command interface{}
+	Term    int
+	Index   int
 }
 
 const (
@@ -287,6 +287,24 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 			DEBUG(dLog, "S%v get heartbeat from S%v at T: %v", rf.me, args.LeaderId, args.Term)
 			rf.becomeFowllower(args.LeaderId, args.Term)
 			reply.Success = true
+		} else {
+			if len(rf.log) < args.PrevLogIndex{
+				reply.Success = false
+			}else{
+				if args.PrevLogTerm == rf.log[args.PrevLogIndex].Term{
+					reply.Success = true
+					rf.log = append(rf.log, args.AppendEntries...)
+					if args.LeaderCommit > rf.commitIndex{
+						if args.LeaderCommit > rf.log[len(rf.log)-1].Index{
+							rf.commitIndex = rf.log[len(rf.log)-1].Index
+						}else {
+							rf.commitIndex = args.LeaderCommit
+						}
+					}
+				}else{
+					reply.Success = false
+				}
+			}
 		}
 	} else {
 		reply.Success = false
@@ -315,6 +333,16 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
+	term, isLeader = rf.GetState()
+	if isLeader {
+		rf.mu.Lock()
+		rf.commitIndex++
+		index = rf.commitIndex
+		en := Entries{command, term, index}
+		rf.log = append(rf.log, en)
+		rf.StartSendAppendEntries(rf.currentTerm)
+		rf.mu.Unlock()
+	}
 
 	return index, term, isLeader
 }
@@ -405,7 +433,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.ticker()
 	rf.mu.Lock()
 	DEBUG(dClient, "S%v Started at T:%v TI: %v", me, rf.currentTerm, rf.timeout)
-		rf.mu.Unlock()
+	rf.mu.Unlock()
 	return rf
 }
 
@@ -525,7 +553,7 @@ func (rf *Raft) sendvote(tmTerm int) {
 				num := len(rf.peers)
 				if truevotes > num/2 {
 					rf.mu.Lock()
-					if tmTerm == rf.currentTerm && rf.state == Scandidate{
+					if tmTerm == rf.currentTerm && rf.state == Scandidate {
 						DEBUG(dLeader, "S%v Achieved Majority for T:%v(%v %v), converting to Leader", rf.me, rf.currentTerm, truevotes, num)
 						rf.becomeLeader()
 						rf.sendheartbeat(rf.currentTerm)
@@ -545,4 +573,55 @@ func (rf *Raft) sendvote(tmTerm int) {
 	}
 
 	cond.Wait()
+}
+
+func (rf *Raft) StartSendAppendEntries(tmterm int) {
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		go func(i int) {
+			for {
+				args := AppendEntiresArgs{}
+				reply := AppendEntiresReply{}
+				args.Term = tmterm
+				args.LeaderId = rf.me
+				rf.mu.Lock()
+				args.PrevLogIndex = rf.nextIndex[i] - 1
+				if rf.matchIndex[i] < rf.nextIndex[i] {
+					args.AppendEntries = append(args.AppendEntries, rf.log[rf.nextIndex[i]-1])
+				} else {
+					args.AppendEntries = rf.log[rf.nextIndex[i]:]
+				}
+				args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+				rf.mu.Unlock()
+
+				go rf.sendAppendEntries(i, &args, &reply)
+				_, isleader := rf.GetState()
+				if isleader {
+					if reply.Success {
+						rf.mu.Lock()
+						rf.matchIndex[i] += len(args.AppendEntries)
+						rf.nextIndex[i] = rf.matchIndex[i] + 1
+						if rf.commitIndex < rf.matchIndex[i] {
+							num := 1
+							for _, v := range rf.matchIndex {
+								if v >= rf.matchIndex[i] {
+									num++
+								}
+							}
+							if num > num/2 {
+								rf.commitIndex = rf.matchIndex[i]
+							}
+						}
+						rf.mu.Unlock()
+						break
+					} else {
+						rf.nextIndex[i]--
+						rf.mu.Unlock()
+					}
+				}
+			}
+		}(i)
+	}
 }
