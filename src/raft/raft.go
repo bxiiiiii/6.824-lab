@@ -73,16 +73,18 @@ type Raft struct {
 
 	leader int
 	votes  int
-	done   bool
-
-	commitIndex int
-	lastApplied int
 	// heartbeatInerval int
 	timeout int
 	timer   int
 
+	//2B
+	commitIndex int
+	lastApplied int
+
 	nextIndex  map[int]int
 	matchIndex map[int]int
+
+	applymsg chan ApplyMsg
 }
 
 type Entries struct {
@@ -217,13 +219,18 @@ type AppendEntiresReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	//2A
-	DEBUG(dVote, "S%v C%v asking for vote", rf.me, args.CandidateId)
+	DEBUG(dVote, "S%v C%v asking for vote pi:%v pt:%v", rf.me, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
 	rf.mu.Lock()
 	if rf.currentTerm < args.Term {
 		DEBUG(dTerm, "S%v Term is lower, updating (%v < %v)", rf.me, rf.currentTerm, args.Term)
 		rf.becomeFowllower(args.CandidateId, args.Term)
-		rf.votedFor = args.CandidateId
-		reply.VoteGranted = true
+
+		if args.LastLogIndex < len(rf.log)-1{
+			reply.VoteGranted = false
+		} else {
+			rf.votedFor = args.CandidateId
+			reply.VoteGranted = true
+		}
 	} else if rf.currentTerm > args.Term {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
@@ -233,6 +240,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 			rf.votedFor = args.CandidateId
 			reply.VoteGranted = true
+			if args.LastLogIndex > len(rf.log)-1{
+				reply.VoteGranted = false
+			}
 		} else {
 			reply.VoteGranted = false
 		}
@@ -283,33 +293,50 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntiresArgs, reply *Ap
 func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply) {
 	rf.mu.Lock()
 	if args.Term >= rf.currentTerm {
-		if len(args.AppendEntries) == 0 && rf.currentTerm == args.Term {
+		// if len(args.AppendEntries) == 0 && rf.currentTerm == args.Term {
+		if len(args.AppendEntries) == 0 {
 			DEBUG(dLog, "S%v get heartbeat from S%v at T: %v", rf.me, args.LeaderId, args.Term)
-			rf.becomeFowllower(args.LeaderId, args.Term)
+			// rf.becomeFowllower(args.LeaderId, args.Term)
 			reply.Success = true
 		} else {
-			if len(rf.log) < args.PrevLogIndex{
+			if len(rf.log) < args.PrevLogIndex {
 				reply.Success = false
-			}else{
-				if args.PrevLogTerm == rf.log[args.PrevLogIndex].Term{
+			} else {
+				if args.PrevLogTerm == rf.log[args.PrevLogIndex].Term {
 					reply.Success = true
 					rf.log = append(rf.log, args.AppendEntries...)
-					if args.LeaderCommit > rf.commitIndex{
-						if args.LeaderCommit > rf.log[len(rf.log)-1].Index{
-							rf.commitIndex = rf.log[len(rf.log)-1].Index
-						}else {
-							rf.commitIndex = args.LeaderCommit
-						}
-					}
-				}else{
+
+				} else {
 					reply.Success = false
 				}
 			}
+			DEBUG(dLog2, "S%v get appendentry from S%v %v", rf.me, args.LeaderId, reply.Success)
 		}
+		tmcommitindex := rf.commitIndex+1
+		if args.LeaderCommit > rf.commitIndex {
+			if args.LeaderCommit > rf.log[len(rf.log)-1].Index {
+				rf.commitIndex = rf.log[len(rf.log)-1].Index
+			} else {
+				rf.commitIndex = args.LeaderCommit
+			}
+			for tmcommitindex <= rf.commitIndex {
+				applyMsg := ApplyMsg{
+					CommandValid: true,
+					Command:      rf.log[tmcommitindex].Command,
+					CommandIndex: tmcommitindex,
+				}
+				DEBUG(dCommit, "S%v commit: %v", rf.me, applyMsg)
+				rf.applymsg <- applyMsg
+				tmcommitindex++
+			}
+		}
+
+		rf.becomeFowllower(args.LeaderId, args.Term)
 	} else {
 		reply.Success = false
 		reply.Term = rf.currentTerm
 	}
+	DEBUG(dLog2, "S%v log: %v, commitidx: %v", rf.me, rf.log, rf.commitIndex)
 	rf.mu.Unlock()
 }
 
@@ -334,13 +361,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 	term, isLeader = rf.GetState()
+	DEBUG(dClient, "S%v <- client isleader:%v", rf.me, isLeader)
 	if isLeader {
 		rf.mu.Lock()
-		rf.commitIndex++
-		index = rf.commitIndex
+		index = len(rf.log)
 		en := Entries{command, term, index}
 		rf.log = append(rf.log, en)
+		DEBUG(dLog2, "S%v log: %v", rf.me, rf.log)
 		rf.StartSendAppendEntries(rf.currentTerm)
+		rf.timer = 0
 		rf.mu.Unlock()
 	}
 
@@ -421,11 +450,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	//2A
 	LOGinit()
 	rf.becomeFowllower(-1, 0)
+	rf.commitIndex = 0
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.votes = 0
+	rf.log = append(rf.log, Entries{0, 0, 0})
 	rf.nextIndex = make(map[int]int)
 	rf.matchIndex = make(map[int]int)
+	rf.applymsg = applyCh
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
@@ -447,6 +479,13 @@ func (rf *Raft) becomeLeader() {
 		delete(rf.nextIndex, rf.nextIndex[i])
 	}
 	rf.state = Sleader
+	for i:= range rf.peers{
+		if i == rf.me{
+			continue
+		}
+		rf.nextIndex[i] = len(rf.log)
+		rf.matchIndex[i] = 0
+	}
 }
 func (rf *Raft) becomeCandidate() {
 	rand.Seed(time.Now().Local().UnixMicro())
@@ -510,12 +549,13 @@ func (rf *Raft) sendheartbeat(tmterm int) {
 					rf.mu.Lock()
 					rf.becomeFowllower(-1, reply.Term)
 					rf.mu.Unlock()
-				} else {
-					rf.mu.Lock()
-					rf.nextIndex[i] = rf.commitIndex + 1
-					rf.matchIndex[i] = 0
-					rf.mu.Unlock()
 				}
+				// } else {
+				// 	rf.mu.Lock()
+				// 	rf.nextIndex[i] = rf.commitIndex + 1
+				// 	rf.matchIndex[i] = 0
+				// 	rf.mu.Unlock()
+				// }
 			}
 		}(i, tmterm)
 	}
@@ -535,12 +575,8 @@ func (rf *Raft) sendvote(tmTerm int) {
 			reply := RequestVoteReply{}
 			args.CandidateId = rf.me
 			args.Term = tmTerm
-			args.LastLogIndex = rf.commitIndex
-			if rf.commitIndex == 0 {
-				args.LastLogTerm = 0
-			} else {
-				args.LastLogTerm = rf.log[rf.commitIndex].Term
-			}
+			args.LastLogIndex = len(rf.log)-1
+			args.LastLogTerm = rf.log[args.LastLogIndex].Term
 			rf.sendRequestVote(i, &args, &reply)
 			// ok := rf.sendRequestVote(i, &args, &reply)
 			// if !ok {
@@ -587,22 +623,30 @@ func (rf *Raft) StartSendAppendEntries(tmterm int) {
 				args.Term = tmterm
 				args.LeaderId = rf.me
 				rf.mu.Lock()
-				args.PrevLogIndex = rf.nextIndex[i] - 1
+				if rf.nextIndex[i] == 0 {
+					args.PrevLogIndex = 0
+				} else {
+					args.PrevLogIndex = rf.nextIndex[i] - 1
+				}
 				if rf.matchIndex[i] < rf.nextIndex[i] {
-					args.AppendEntries = append(args.AppendEntries, rf.log[rf.nextIndex[i]-1])
+					args.AppendEntries = append(args.AppendEntries, rf.log[rf.nextIndex[i]])
 				} else {
 					args.AppendEntries = rf.log[rf.nextIndex[i]:]
 				}
 				args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+				DEBUG(dLog2, "S%v -> %v send AE pi: %v, pt: %v log: %v", rf.me, i, args.PrevLogIndex, args.PrevLogTerm, args.AppendEntries)
+				DEBUG(dLog2, "S%v n: %v m: %v", rf.me, rf.nextIndex, rf.matchIndex)
 				rf.mu.Unlock()
 
-				go rf.sendAppendEntries(i, &args, &reply)
+				rf.sendAppendEntries(i, &args, &reply)
+				DEBUG(dLog2, "S%v ->%v appendentry is %v", rf.me, i, reply.Success)
 				_, isleader := rf.GetState()
 				if isleader {
+					rf.mu.Lock()
 					if reply.Success {
-						rf.mu.Lock()
 						rf.matchIndex[i] += len(args.AppendEntries)
 						rf.nextIndex[i] = rf.matchIndex[i] + 1
+						DEBUG(dLog, "S%v commitidx: %v, matchidx: %v", rf.me, rf.commitIndex, rf.matchIndex[i])
 						if rf.commitIndex < rf.matchIndex[i] {
 							num := 1
 							for _, v := range rf.matchIndex {
@@ -612,13 +656,26 @@ func (rf *Raft) StartSendAppendEntries(tmterm int) {
 							}
 							if num > num/2 {
 								rf.commitIndex = rf.matchIndex[i]
+								applyMsg := ApplyMsg{
+									CommandValid: true,
+									Command:      rf.log[rf.matchIndex[i]].Command,
+									CommandIndex: rf.matchIndex[i],
+								}
+								DEBUG(dCommit, "S%v commit: %v", rf.me, applyMsg)
+								rf.applymsg <- applyMsg
 							}
 						}
+						DEBUG(dLog2, "S%v n: %v m: %v ci: %v", rf.me, rf.nextIndex, rf.matchIndex, rf.commitIndex)
 						rf.mu.Unlock()
 						break
 					} else {
-						rf.nextIndex[i]--
-						rf.mu.Unlock()
+						if reply.Term > rf.currentTerm{
+							rf.becomeFowllower(-1, reply.Term)
+						}else{
+							rf.nextIndex[i]--
+							rf.mu.Unlock()
+						}
+						
 					}
 				}
 			}
