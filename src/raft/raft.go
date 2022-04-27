@@ -225,7 +225,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		DEBUG(dTerm, "S%v Term is lower, updating (%v < %v)", rf.me, rf.currentTerm, args.Term)
 		rf.becomeFowllower(args.CandidateId, args.Term)
 
-		if args.LastLogIndex < len(rf.log)-1{
+		if args.LastLogIndex < len(rf.log)-1 {
 			reply.VoteGranted = false
 		} else {
 			rf.votedFor = args.CandidateId
@@ -240,7 +240,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 			rf.votedFor = args.CandidateId
 			reply.VoteGranted = true
-			if args.LastLogIndex > len(rf.log)-1{
+			if args.LastLogIndex > len(rf.log)-1 {
 				reply.VoteGranted = false
 			}
 		} else {
@@ -312,7 +312,7 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 			}
 			DEBUG(dLog2, "S%v get appendentry from S%v %v", rf.me, args.LeaderId, reply.Success)
 		}
-		tmcommitindex := rf.commitIndex+1
+		tmcommitindex := rf.commitIndex + 1
 		if args.LeaderCommit > rf.commitIndex {
 			if args.LeaderCommit > rf.log[len(rf.log)-1].Index {
 				rf.commitIndex = rf.log[len(rf.log)-1].Index
@@ -412,7 +412,9 @@ func (rf *Raft) ticker() {
 			if isleader {
 				rf.timer = 0
 				go func() {
-					rf.sendheartbeat(rf.currentTerm)
+					// rf.sendheartbeat(rf.currentTerm)
+					rf.StartSendAppendEntries(rf.currentTerm)
+
 				}()
 			} else {
 				rf.becomeCandidate()
@@ -479,8 +481,8 @@ func (rf *Raft) becomeLeader() {
 		delete(rf.nextIndex, rf.nextIndex[i])
 	}
 	rf.state = Sleader
-	for i:= range rf.peers{
-		if i == rf.me{
+	for i := range rf.peers {
+		if i == rf.me {
 			continue
 		}
 		rf.nextIndex[i] = len(rf.log)
@@ -527,13 +529,8 @@ func (rf *Raft) sendheartbeat(tmterm int) {
 			reply := AppendEntiresReply{}
 			args.LeaderId = rf.me
 			args.Term = tmterm
-			commitid := 0
-			if len(rf.log) > 0 {
-				commitid = rf.log[len(rf.log)-1].Index
-			} else {
-				commitid = 0
-			}
-			args.LeaderCommit = commitid
+			args.LeaderCommit = rf.commitIndex
+
 			args.PrevLogIndex = 0
 			args.PrevLogTerm = 0
 			DEBUG(dLog, "S%v -> S%v SendingHTB PLI: %v PLT:%v LC:%v - %v at T: %v", rf.me, i, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.AppendEntries, tmterm)
@@ -575,7 +572,7 @@ func (rf *Raft) sendvote(tmTerm int) {
 			reply := RequestVoteReply{}
 			args.CandidateId = rf.me
 			args.Term = tmTerm
-			args.LastLogIndex = len(rf.log)-1
+			args.LastLogIndex = len(rf.log) - 1
 			args.LastLogTerm = rf.log[args.LastLogIndex].Term
 			rf.sendRequestVote(i, &args, &reply)
 			// ok := rf.sendRequestVote(i, &args, &reply)
@@ -592,7 +589,8 @@ func (rf *Raft) sendvote(tmTerm int) {
 					if tmTerm == rf.currentTerm && rf.state == Scandidate {
 						DEBUG(dLeader, "S%v Achieved Majority for T:%v(%v %v), converting to Leader", rf.me, rf.currentTerm, truevotes, num)
 						rf.becomeLeader()
-						rf.sendheartbeat(rf.currentTerm)
+						// rf.sendheartbeat(rf.currentTerm)
+						rf.StartSendAppendEntries(rf.currentTerm)
 					}
 					rf.mu.Unlock()
 				}
@@ -622,16 +620,23 @@ func (rf *Raft) StartSendAppendEntries(tmterm int) {
 				reply := AppendEntiresReply{}
 				args.Term = tmterm
 				args.LeaderId = rf.me
+				args.LeaderCommit = rf.commitIndex
 				rf.mu.Lock()
 				if rf.nextIndex[i] == 0 {
 					args.PrevLogIndex = 0
 				} else {
 					args.PrevLogIndex = rf.nextIndex[i] - 1
 				}
-				if rf.matchIndex[i] < rf.nextIndex[i] {
-					args.AppendEntries = append(args.AppendEntries, rf.log[rf.nextIndex[i]])
-				} else {
-					args.AppendEntries = rf.log[rf.nextIndex[i]:]
+				if rf.matchIndex[i] < len(rf.log)-1 {
+
+					if rf.matchIndex[i] < rf.nextIndex[i] {
+						if len(rf.log) > rf.nextIndex[i] {
+							args.AppendEntries = append(args.AppendEntries, rf.log[rf.nextIndex[i]])
+						}
+					} else {
+						args.AppendEntries = rf.log[rf.nextIndex[i]:]
+					}
+
 				}
 				args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
 				DEBUG(dLog2, "S%v -> %v send AE pi: %v, pt: %v log: %v", rf.me, i, args.PrevLogIndex, args.PrevLogTerm, args.AppendEntries)
@@ -640,11 +645,14 @@ func (rf *Raft) StartSendAppendEntries(tmterm int) {
 
 				rf.sendAppendEntries(i, &args, &reply)
 				DEBUG(dLog2, "S%v ->%v appendentry is %v", rf.me, i, reply.Success)
-				_, isleader := rf.GetState()
-				if isleader {
+				term, isleader := rf.GetState()
+				if isleader && term == tmterm {
 					rf.mu.Lock()
 					if reply.Success {
 						rf.matchIndex[i] += len(args.AppendEntries)
+						if rf.matchIndex[i] < args.PrevLogIndex{
+							rf.matchIndex[i] = args.PrevLogIndex
+						}
 						rf.nextIndex[i] = rf.matchIndex[i] + 1
 						DEBUG(dLog, "S%v commitidx: %v, matchidx: %v", rf.me, rf.commitIndex, rf.matchIndex[i])
 						if rf.commitIndex < rf.matchIndex[i] {
@@ -669,13 +677,16 @@ func (rf *Raft) StartSendAppendEntries(tmterm int) {
 						rf.mu.Unlock()
 						break
 					} else {
-						if reply.Term > rf.currentTerm{
+						if reply.Term > rf.currentTerm {
 							rf.becomeFowllower(-1, reply.Term)
-						}else{
-							rf.nextIndex[i]--
+						} else {
+							if rf.nextIndex[i] > 0 {
+								rf.nextIndex[i]--
+							}
+							DEBUG(dError, "S%v i: %v, nextidx: %v", rf.me, i, rf.nextIndex[i])
 							rf.mu.Unlock()
 						}
-						
+
 					}
 				}
 			}
