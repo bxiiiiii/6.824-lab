@@ -86,6 +86,7 @@ type Raft struct {
 	matchIndex map[int]int
 
 	applymsg chan ApplyMsg
+	cond sync.Cond
 }
 
 type Entries struct {
@@ -341,11 +342,25 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 		if len(rf.log)-1 < args.PrevLogIndex {
 			reply.Success = false
 			reply.Term = rf.currentTerm
-			reply.Maxindex = len(rf.log) - 1
+			// reply.Maxindex = len(rf.log) - 1
+			ppterm := args.PrevLogTerm - 1
+			for i := 0; i < len(rf.log); i++ {
+				if rf.log[i].Term == ppterm {
+					reply.Maxindex = rf.log[i].Index
+					break
+				}
+			}
 		} else {
 			if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 				reply.Success = false
 				reply.Term = rf.currentTerm
+				ppterm := args.PrevLogTerm - 1
+				for i := 0; i < len(rf.log); i++ {
+					if rf.log[i].Term == ppterm {
+						reply.Maxindex = rf.log[i].Index
+						break
+					}
+				}
 			} else {
 				for i, j := range args.AppendEntries {
 					if len(rf.log) <= j.Index {
@@ -359,16 +374,16 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 				}
 				reply.Success = true
 				reply.Term = rf.currentTerm
-				reply.Maxindex = len(rf.log) - 1
+				// reply.Maxindex = len(rf.log) - 1
 			}
 		}
 		if len(args.AppendEntries) != 0 {
 			reply.Maxindex = args.AppendEntries[len(args.AppendEntries)-1].Index
-		} else {	
+		} else {
 			reply.Maxindex = -1
 		}
 		rf.becomeFowllower(args.LeaderId, args.Term)
-		if !reply.Success{
+		if !reply.Success {
 			rf.mu.Unlock()
 			return
 		}
@@ -390,19 +405,20 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 			}
 		}
 		DEBUG(dCommit, "S%v update commitindex to %v", rf.me, rf.commitIndex)
+		rf.cond.Signal()
 	}
 
 	//apply
-	for rf.commitIndex > rf.lastApplied {
-		rf.lastApplied++
-		applyMsg := ApplyMsg{
-			CommandValid: true,
-			CommandIndex: rf.lastApplied,
-			Command:      rf.log[rf.lastApplied].Command,
-		}
-		rf.applymsg <- applyMsg
-		DEBUG(dCommit, "S%v apply: %v", rf.me, applyMsg)
-	}
+	// for rf.commitIndex > rf.lastApplied {
+	// 	rf.lastApplied++
+	// 	applyMsg := ApplyMsg{
+	// 		CommandValid: true,
+	// 		CommandIndex: rf.lastApplied,
+	// 		Command:      rf.log[rf.lastApplied].Command,
+	// 	}
+	// 	rf.applymsg <- applyMsg
+	// 	DEBUG(dCommit, "S%v apply: %v", rf.me, applyMsg)
+	// }
 	rf.mu.Unlock()
 }
 
@@ -526,15 +542,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// sync.Opts.DeadlockTimeout = time.Millisecond * 1000
 	rf.nextIndex = make(map[int]int)
 	rf.matchIndex = make(map[int]int)
-	rf.applymsg = applyCh
+	// rf.applymsg = applyCh
+	rf.cond = *sync.NewCond(&rf.mu)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
-	rf.mu.Lock()
+	go rf.applyGoro(applyCh)
 	DEBUG(dClient, "S%v Started at T:%v TI: %v", me, rf.currentTerm, rf.timeout)
-	rf.mu.Unlock()
 	return rf
 }
 
@@ -562,7 +578,7 @@ func (rf *Raft) becomeCandidate() {
 	rf.votedFor = rf.me
 	rf.state = Scandidate
 	rf.votes = 1
-	rf.timeout = rand.Intn(200) + 200
+	rf.timeout = rand.Intn(400) + 100
 	rf.timer = 0
 	// tmterm := rf.currentTerm
 	DEBUG(dTimer, "S%v timeout Reset: %v", rf.me, rf.timeout)
@@ -579,7 +595,7 @@ func (rf *Raft) becomeFowllower(leaderId int, Term int) {
 	rf.state = Sfollower
 	rf.leader = leaderId
 
-	rf.timeout = rand.Intn(200) + 200
+	rf.timeout = rand.Intn(400) + 100
 	rf.timer = 0
 	DEBUG(dTimer, "S%v timeout Reset: %v", rf.me, rf.timeout)
 }
@@ -710,7 +726,7 @@ func (rf *Raft) StartSendAppendEntries(tmterm int) {
 			if rf.state == Sleader && rf.currentTerm == tmterm {
 
 				if reply.Success {
-					if len(args.AppendEntries) != 0{
+					if len(args.AppendEntries) != 0 {
 						rf.matchIndex[i] = args.AppendEntries[len(args.AppendEntries)-1].Index
 					}
 					rf.nextIndex[i] = rf.matchIndex[i] + 1
@@ -725,17 +741,18 @@ func (rf *Raft) StartSendAppendEntries(tmterm int) {
 						DEBUG(dError, "S%v num: %v", rf.me, num)
 						if num >= (len(rf.peers)+1)/2 {
 							rf.commitIndex = rf.matchIndex[i]
-							for rf.lastApplied < rf.commitIndex {
-								rf.lastApplied++
-								applyMsg := ApplyMsg{
-									CommandValid: true,
-									Command:      rf.log[rf.lastApplied].Command,
-									CommandIndex: rf.lastApplied,
-								}
+							// for rf.lastApplied < rf.commitIndex {
+							// 	rf.lastApplied++
+							// 	applyMsg := ApplyMsg{
+							// 		CommandValid: true,
+							// 		Command:      rf.log[rf.lastApplied].Command,
+							// 		CommandIndex: rf.lastApplied,
+							// 	}
 
-								rf.applymsg <- applyMsg
-								DEBUG(dCommit, "S%v commit: %v", rf.me, applyMsg)
-							}
+							// 	rf.applymsg <- applyMsg
+							// 	DEBUG(dCommit, "S%v commit: %v", rf.me, applyMsg)
+							// }
+							rf.cond.Signal()
 						}
 					}
 					DEBUG(dLog2, "S%v n: %v m: %v ci: %v", rf.me, rf.nextIndex, rf.matchIndex, rf.commitIndex)
@@ -743,8 +760,9 @@ func (rf *Raft) StartSendAppendEntries(tmterm int) {
 					if reply.Term > rf.currentTerm {
 						rf.becomeFowllower(-1, reply.Term)
 					} else {
-						if rf.nextIndex[i] > 0 {
-							rf.nextIndex[i]--
+						rf.nextIndex[i] = reply.Maxindex
+						if rf.nextIndex[i] == -1 {
+							rf.nextIndex[i] = 0
 						}
 						DEBUG(dError, "S%v i: %v, nextidx: %v", rf.me, i, rf.nextIndex[i])
 
@@ -754,5 +772,36 @@ func (rf *Raft) StartSendAppendEntries(tmterm int) {
 			}
 			rf.mu.Unlock()
 		}(i)
+	}
+}
+
+func (rf *Raft) applyGoro(applyCh chan ApplyMsg) {
+
+	for {
+
+		rf.mu.Lock()
+		for rf.lastApplied == rf.commitIndex{
+			rf.cond.Wait()
+		}
+		lastApplied := rf.lastApplied
+		commitIndex := rf.commitIndex
+		log := rf.log
+		rf.mu.Unlock()
+		for lastApplied < commitIndex {
+			lastApplied++
+			applyMsg := ApplyMsg{
+				CommandValid: true,
+				Command:      log[lastApplied].Command,
+				CommandIndex: lastApplied,
+			}
+			rf.applymsg <- applyMsg
+			DEBUG(dCommit, "S%v commit: %v", rf.me, applyMsg)
+		}
+		if rf.lastApplied != lastApplied {
+			rf.mu.Lock()
+			rf.lastApplied = lastApplied
+			rf.mu.Unlock()
+		}
+		// time.Sleep(95 * time.Millisecond)
 	}
 }
