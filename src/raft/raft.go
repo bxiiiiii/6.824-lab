@@ -86,7 +86,7 @@ type Raft struct {
 	matchIndex map[int]int
 
 	applymsg chan ApplyMsg
-	cond sync.Cond
+	cond     *sync.Cond
 }
 
 type Entries struct {
@@ -319,6 +319,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntiresArgs, reply *Ap
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply) {
+	rf.cond.Signal()
 	rf.mu.Lock()
 	DEBUG(dLog, "S%v get hbt or ae ", rf.me)
 	DEBUG(dError, "S%v leader: %v log: %v at T:%v", rf.me, rf.leader, rf.log, rf.currentTerm)
@@ -405,9 +406,9 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 			}
 		}
 		DEBUG(dCommit, "S%v update commitindex to %v", rf.me, rf.commitIndex)
-		rf.cond.Signal()
-	}
 
+	}
+	rf.cond.Signal()
 	//apply
 	// for rf.commitIndex > rf.lastApplied {
 	// 	rf.lastApplied++
@@ -543,7 +544,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make(map[int]int)
 	rf.matchIndex = make(map[int]int)
 	// rf.applymsg = applyCh
-	rf.cond = *sync.NewCond(&rf.mu)
+	rf.cond = sync.NewCond(&rf.mu)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
@@ -780,7 +781,7 @@ func (rf *Raft) applyGoro(applyCh chan ApplyMsg) {
 	for {
 
 		rf.mu.Lock()
-		for rf.lastApplied == rf.commitIndex{
+		for rf.lastApplied == rf.commitIndex {
 			rf.cond.Wait()
 		}
 		lastApplied := rf.lastApplied
@@ -794,14 +795,10 @@ func (rf *Raft) applyGoro(applyCh chan ApplyMsg) {
 				Command:      log[lastApplied].Command,
 				CommandIndex: lastApplied,
 			}
-			rf.applymsg <- applyMsg
-			DEBUG(dCommit, "S%v commit: %v", rf.me, applyMsg)
+			applyCh <- applyMsg
 		}
-		if rf.lastApplied != lastApplied {
-			rf.mu.Lock()
-			rf.lastApplied = lastApplied
-			rf.mu.Unlock()
-		}
-		// time.Sleep(95 * time.Millisecond)
+		rf.mu.Lock()
+		rf.lastApplied = lastApplied
+		rf.mu.Unlock()
 	}
 }
