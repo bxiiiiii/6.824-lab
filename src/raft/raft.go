@@ -733,7 +733,6 @@ func (rf *Raft) SendAppendEntriesTo(i int, tmterm int) {
 		args.PrevLogIndex = rf.nextIndex[i] - 1
 	}
 	if len(rf.Log)-1 >= rf.nextIndex[i] {
-		// args.AppendEntries = rf.Log[rf.nextIndex[i]:]
 		args.AppendEntries = append(args.AppendEntries, rf.Log[rf.nextIndex[i]:]...)
 	}
 	args.PrevLogTerm = rf.Log[args.PrevLogIndex].Term
@@ -745,19 +744,7 @@ func (rf *Raft) SendAppendEntriesTo(i int, tmterm int) {
 	DEBUG(dLog2, "S%v ->%v appendentry is %v", rf.me, i, reply.Success)
 	rf.mu.Lock()
 	if rf.state == Sleader && rf.CurrentTerm == tmterm {
-		if len(rf.Log)-1 < reply.CommitIndex {
-			rf.Log = rf.Log[:rf.commitIndex+1]
-			rf.becomeFowllower(-1, reply.Term)
-			go rf.persist()
-			rf.mu.Unlock()
-			return
-		} else if rf.Log[reply.CommitIndex].Term != reply.CommitTerm {
-			rf.Log = rf.Log[:rf.commitIndex+1]
-			rf.becomeFowllower(-1, reply.Term)
-			go rf.persist()
-			rf.mu.Unlock()
-			return
-		}
+		
 		if reply.Success {
 			if len(args.AppendEntries) != 0 {
 				rf.matchIndex[i] = args.AppendEntries[len(args.AppendEntries)-1].Index
@@ -767,7 +754,7 @@ func (rf *Raft) SendAppendEntriesTo(i int, tmterm int) {
 			rf.nextIndex[i] = rf.matchIndex[i] + 1
 
 			DEBUG(dLog, "S%v commitidx: %v, matchidx: %v", rf.me, rf.commitIndex, rf.matchIndex[i])
-			if rf.commitIndex < rf.matchIndex[i] {
+			if rf.commitIndex < rf.matchIndex[i] && rf.CurrentTerm == rf.Log[rf.matchIndex[i]].Term{
 				num := 1
 				for _, v := range rf.matchIndex {
 					if v >= rf.matchIndex[i] {
@@ -795,7 +782,6 @@ func (rf *Raft) SendAppendEntriesTo(i int, tmterm int) {
 			DEBUG(dLog2, "S%v log: %v", rf.me, rf.Log)
 			if reply.Term > rf.CurrentTerm {
 				rf.becomeFowllower(-1, reply.Term)
-				// rf.Log = rf.Log[:rf.commitIndex+1]
 				go rf.persist()
 			} else {
 				// rf.nextIndex[i] = reply.Maxindex + 1
