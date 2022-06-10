@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 	"bytes"
+	// "fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -94,7 +95,7 @@ type Raft struct {
 
 	LastIncludedIndex int
 	LastIncludedTerm  int
-	SnapshotData          []byte
+	SnapshotData      []byte
 }
 
 type Entries struct {
@@ -137,20 +138,15 @@ func (rf *Raft) persist() {
 	// Your code here (2C).
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	w1 := new(bytes.Buffer)
-	e1 := labgob.NewEncoder(w1)
 	rf.mu.Lock()
 	e.Encode(rf.CurrentTerm)
 	e.Encode(rf.VotedFor)
 	e.Encode(rf.Log)
 	e.Encode(rf.LastLogIndex)
-	e1.Encode(rf.LastIncludedIndex)
-	e1.Encode(rf.SnapshotData)
-	rf.mu.Unlock()
 	data := w.Bytes()
-	data1 := w1.Bytes()
 	// rf.persister.SaveRaftState(data)
-	rf.persister.SaveStateAndSnapshot(data, data1)
+	rf.persister.SaveStateAndSnapshot(data, rf.SnapshotData)
+	rf.mu.Unlock()
 }
 
 //
@@ -188,15 +184,36 @@ func (rf *Raft) readSnapshot(data []byte) {
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	var index int
-	var snapshot []byte
-	if d.Decode(&index) != nil && d.Decode(&snapshot) != nil {
-		DEBUG(dError, "S%v readSnapshotPersist failed", rf.me)
+	err := d.Decode(&index)
+	if err != nil{
+		DEBUG(dError, "S%v readSnapshotPersist failed\n%v", rf.me, err)
 	} else {
+		if index == -1 {
+			return
+		}
 		rf.mu.Lock()
 		rf.LastIncludedIndex = index
-		rf.SnapshotData = snapshot
+		rf.SnapshotData = data
 		rf.mu.Unlock()
 	}
+
+	go func() {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if rf.LastIncludedIndex != -1 {
+
+			applyMsg := ApplyMsg{
+				SnapshotValid: true,
+				Snapshot:      rf.SnapshotData,
+				SnapshotIndex: rf.LastIncludedIndex,
+				SnapshotTerm:  rf.LastIncludedTerm,
+			}
+			rf.applyCh <- applyMsg
+			DEBUG(dCommit, "S%v apply: %v", rf.me, applyMsg.SnapshotIndex)
+			//TODO: committed ?
+			rf.lastApplied = rf.LastIncludedIndex
+		}
+	}()
 }
 
 //
@@ -406,6 +423,18 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		reply.Term = rf.CurrentTerm
 		rf.mu.Unlock()
 		return
+	} else if args.Term > rf.CurrentTerm {
+		rf.becomeFowllower(args.LeaderId, args.Term)
+	} else {
+		if rf.state == Sfollower && rf.leader != args.LeaderId {
+			if rf.leader == -1 {
+				rf.becomeFowllower(args.LeaderId, rf.CurrentTerm)
+			} else {
+				reply.Term = rf.CurrentTerm
+				rf.mu.Unlock()
+				return
+			}
+		}
 	}
 	for _, en := range rf.Log {
 		if en.Index < args.LastIncludedIndex {
@@ -416,7 +445,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.SnapshotData = args.Data
 	rf.LastIncludedIndex = args.LastIncludedIndex
 	rf.LastIncludedTerm = args.LastIncludedTerm
-	go rf.persist()
+	rf.mu.Unlock()
+	rf.persist()
 
 	go func() {
 		rf.mu.Lock()
@@ -436,7 +466,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		}
 	}()
 
-	rf.mu.Unlock()
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply) {
@@ -479,11 +508,16 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 	} else {
 		if rf.state == Sfollower && rf.leader != args.LeaderId {
 			DEBUG(dTrace, "S%v reject leader in ae f-l:%v %v ll:%v", rf.me, rf.leader, args.LeaderId, rf.LastLogIndex)
-			reply.Success = false
-			reply.Term = rf.CurrentTerm
-			DEBUG(dTimer, "S%v timer: %v, timeout: %v", rf.me, rf.timer, rf.timeout)
-			rf.mu.Unlock()
-			return
+			if rf.leader == -1 {
+				rf.becomeFowllower(args.LeaderId, rf.CurrentTerm)
+			} else {
+				reply.Success = false
+				reply.Term = rf.CurrentTerm
+				DEBUG(dTimer, "S%v timer: %v, timeout: %v", rf.me, rf.timer, rf.timeout)
+				rf.mu.Unlock()
+				return
+			}
+
 		}
 		if rf.LastLogIndex < args.PrevLogIndex {
 			DEBUG(dTrace, "S%v comp index failed in ae f-l:%v %v ll:%v", rf.me, rf.LastLogIndex, args.PrevLogIndex, rf.LastLogIndex)
@@ -703,7 +737,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 	go rf.applyGoro(applyCh)
-	DEBUG(dTrace, "S%v Started at T:%v TI: %v log: %v", me, rf.CurrentTerm, rf.timeout, rf.Log)
+	DEBUG(dTrace, "S%v Started at T:%v TI: %v log: %v ll: %v li: %v la:%v", me, rf.CurrentTerm, rf.timeout, rf.Log, rf.LastLogIndex, rf.LastIncludedIndex, rf.lastApplied)
 	return rf
 }
 
