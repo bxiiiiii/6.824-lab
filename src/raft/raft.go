@@ -185,7 +185,7 @@ func (rf *Raft) readSnapshot(data []byte) {
 	d := labgob.NewDecoder(r)
 	var index int
 	err := d.Decode(&index)
-	if err != nil{
+	if err != nil {
 		DEBUG(dError, "S%v readSnapshotPersist failed\n%v", rf.me, err)
 	} else {
 		if index == -1 {
@@ -436,15 +436,28 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			}
 		}
 	}
+	if rf.LastIncludedIndex > args.LastIncludedIndex {
+		rf.mu.Unlock()
+		return
+	}
 	for _, en := range rf.Log {
-		if en.Index < args.LastIncludedIndex {
+		if en.Index <= args.LastIncludedIndex {
 			delete(rf.Log, en.Index)
 		}
+	}
+
+	rf.Log[args.LastIncludedIndex] = Entries{
+		Term:  args.LastIncludedTerm,
+		Index: args.LastIncludedIndex,
 	}
 
 	rf.SnapshotData = args.Data
 	rf.LastIncludedIndex = args.LastIncludedIndex
 	rf.LastIncludedTerm = args.LastIncludedTerm
+
+	if rf.LastLogIndex < rf.LastIncludedIndex {
+		rf.LastLogIndex = rf.LastIncludedIndex
+	}
 	rf.mu.Unlock()
 	rf.persist()
 
@@ -462,6 +475,9 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			DEBUG(dCommit, "S%v apply: %v", rf.me, applyMsg.SnapshotIndex)
 			//TODO: committed ?
 			rf.lastApplied = args.LastIncludedIndex
+			if rf.commitIndex < args.LastIncludedIndex {
+				rf.commitIndex = args.LastIncludedIndex
+			}
 			return
 		}
 	}()
@@ -723,7 +739,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.Log = make(map[int]Entries)
 	rf.Log[0] = Entries{0, 0, 0}
 	rf.LastLogIndex = 0
-	// sync.Opts.DeadlockTimeout = time.Millisecond * 1000
+	// sync.Opts.DeadlockTimeout = time.Mil                                                                                                                              lisecond * 1000
 	rf.nextIndex = make(map[int]int)
 	rf.matchIndex = make(map[int]int)
 	rf.applyCh = applyCh
@@ -900,11 +916,6 @@ func (rf *Raft) SendAppendEntriesTo(i int, tmterm int) {
 	args.LeaderId = rf.me
 	rf.mu.Lock()
 	args.LeaderCommit = rf.commitIndex
-	if rf.nextIndex[i] == 0 {
-		args.PrevLogIndex = 0
-	} else {
-		args.PrevLogIndex = rf.nextIndex[i] - 1
-	}
 	snapflag := 0
 	if rf.LastLogIndex >= rf.nextIndex[i] {
 		if _, ok := rf.Log[rf.nextIndex[i]]; !ok {
@@ -923,6 +934,11 @@ func (rf *Raft) SendAppendEntriesTo(i int, tmterm int) {
 		for idx := rf.nextIndex[i]; idx <= rf.LastLogIndex; idx++ {
 			args.AppendEntries = append(args.AppendEntries, rf.Log[idx])
 		}
+	}
+	if rf.nextIndex[i] == 0 {
+		args.PrevLogIndex = 0
+	} else {
+		args.PrevLogIndex = rf.nextIndex[i] - 1
 	}
 	args.PrevLogTerm = rf.Log[args.PrevLogIndex].Term
 	args.SnapShot = snapflag
