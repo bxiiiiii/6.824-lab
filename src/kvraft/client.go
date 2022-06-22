@@ -1,9 +1,14 @@
 package kvraft
 
-import "6.824/labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"fmt"
+	// "fmt"
+	"math/big"
+	"time"
 
+	"6.824/labrpc"
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
@@ -39,7 +44,18 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+
+	for {
+		for i := range ck.servers {
+			args := GetArgs{key}
+			reply := GetReply{}
+			ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
+			if ok && reply.Err == "" {
+				return reply.Value
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 //
@@ -54,6 +70,22 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	for {
+		for i := range ck.servers {
+			args := PutAppendArgs{
+				Key:   key,
+				Value: value,
+				Op:    op,
+			}
+			reply := PutAppendReply{}
+			ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
+			fmt.Println("******************",ok, reply.Err)
+			if ok && reply.Err == "" {
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {

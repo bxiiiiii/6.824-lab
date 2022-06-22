@@ -1,12 +1,16 @@
 package kvraft
 
 import (
+	"fmt"
+	"log"
+	// "sync"
+	"sync/atomic"
+	"time"
+
 	"6.824/labgob"
 	"6.824/labrpc"
 	"6.824/raft"
-	"log"
-	"sync"
-	"sync/atomic"
+	sync "github.com/sasha-s/go-deadlock"
 )
 
 const Debug = false
@@ -18,11 +22,13 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Type  string
+	Key   string
+	Value string
 }
 
 type KVServer struct {
@@ -35,15 +41,70 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	storage map[string]string
 }
-
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	operation := Op{
+		Type: "Get",
+		Key:  args.Key,
+	}
+	fmt.Println("----",kv.storage)
+	_, _, isLeader := kv.rf.Start(operation)
+	if !isLeader {
+		reply.Err = "failed"
+		reply.Value = ""
+	} else {
+		reply.Err = ""
+		kv.mu.Lock()
+		if _, ok := kv.storage[args.Key]; ok {
+			reply.Value = kv.storage[args.Key]
+		} else {
+			reply.Value = ""
+		}
+		kv.mu.Unlock()
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	operation := Op{
+		Type:  args.Op,
+		Key:   args.Key,
+		Value: args.Value,
+	}
+	idx, _, isleader := kv.rf.Start(operation)
+	if !isleader {
+		reply.Err = "failed"
+		return
+	}
+	time.Sleep(50 * time.Millisecond)
+	for m := range kv.applyCh {
+		fmt.Println(m, "*", idx)
+		if m.CommandValid {
+			if m.CommandIndex == idx {
+				kv.mu.Lock()
+				// if _, ok := kv.storage[args.Key]; ok {
+				// 	kv.storage[args.Key] += args.Value
+				// } else {
+				// 	kv.storage[args.Key] = args.Value
+				// }
+				if args.Op == "Put"{
+					kv.storage[args.Key] = args.Value
+				} else if args.Op == "Append"{
+					kv.storage[args.Key] += args.Value
+				} else {
+					fmt.Println("unknown type")
+				}
+				kv.mu.Unlock()
+				// fmt.Println("*****",kv.storage)
+				reply.Err = ""
+				return
+			}
+		}
+	}
+	reply.Err = "failed"
 }
 
 //
@@ -96,6 +157,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-
+	kv.storage = make(map[string]string)
 	return kv
 }
