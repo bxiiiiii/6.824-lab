@@ -51,6 +51,7 @@ func (ck *Clerk) Get(key string) string {
 			reply := GetReply{}
 			ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
 			if ok && reply.Err == "" {
+				fmt.Println("//successful.")
 				return reply.Value
 			}
 		}
@@ -81,6 +82,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
 			fmt.Println("******************",ok, reply.Err)
 			if ok && reply.Err == "" {
+				fmt.Println("//successful.")
 				return
 			}
 		}

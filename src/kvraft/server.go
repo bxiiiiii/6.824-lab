@@ -3,9 +3,10 @@ package kvraft
 import (
 	"fmt"
 	"log"
-	// "sync"
-	"sync/atomic"
 	"time"
+
+	dsync "sync"
+	"sync/atomic"
 
 	"6.824/labgob"
 	"6.824/labrpc"
@@ -41,7 +42,9 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	storage map[string]string
+	storage  map[string]string
+	ApplyIdx int
+	cond *dsync.Cond
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -50,7 +53,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		Type: "Get",
 		Key:  args.Key,
 	}
-	fmt.Println("----",kv.storage)
+	fmt.Println("----", kv.storage)
 	_, _, isLeader := kv.rf.Start(operation)
 	if !isLeader {
 		reply.Err = "failed"
@@ -79,32 +82,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.Err = "failed"
 		return
 	}
-	time.Sleep(50 * time.Millisecond)
-	for m := range kv.applyCh {
-		fmt.Println(m, "*", idx)
-		if m.CommandValid {
-			if m.CommandIndex == idx {
-				kv.mu.Lock()
-				// if _, ok := kv.storage[args.Key]; ok {
-				// 	kv.storage[args.Key] += args.Value
-				// } else {
-				// 	kv.storage[args.Key] = args.Value
-				// }
-				if args.Op == "Put"{
-					kv.storage[args.Key] = args.Value
-				} else if args.Op == "Append"{
-					kv.storage[args.Key] += args.Value
-				} else {
-					fmt.Println("unknown type")
-				}
-				kv.mu.Unlock()
-				// fmt.Println("*****",kv.storage)
-				reply.Err = ""
-				return
-			}
-		}
+	kv.mu.Lock()
+	for kv.ApplyIdx < idx{
+		kv.cond.Wait()
 	}
-	reply.Err = "failed"
+	kv.mu.Unlock()
 }
 
 //
@@ -158,5 +140,26 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	kv.storage = make(map[string]string)
+	kv.ApplyIdx = 0
+	kv.cond = dsync.NewCond(&kv.mu)
+	sync.Opts.DeadlockTimeout = time.Second
+	go kv.Apply()
 	return kv
+}
+
+func (kv *KVServer) Apply() {
+	for entry := range kv.applyCh {
+		if entry.CommandValid {
+			kv.mu.Lock()
+			op := (entry.Command).(Op)
+			if op.Type == "Put" {
+				kv.storage[op.Key] = op.Value
+			} else if op.Type == "Append" {
+				kv.storage[op.Key] += op.Value
+			}
+			kv.ApplyIdx = entry.CommandIndex
+			kv.cond.Signal()
+			kv.mu.Unlock()
+		}
+	}
 }
