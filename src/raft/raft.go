@@ -18,7 +18,6 @@ package raft
 //
 
 import (
-	//	"bytes"
 	"bytes"
 	// "fmt"
 	"math/rand"
@@ -26,7 +25,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	// "6.824/labgob"
 	"6.824/labgob"
 	"6.824/labrpc"
 	// sync "github.com/sasha-s/go-deadlock"
@@ -645,8 +643,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		en := Entries{command, term, index}
 		rf.Log[index] = en
 		DEBUG(dLog2, "S%v log: %v", rf.me, rf.Log)
-		// rf.StartSendAppendEntries(rf.CurrentTerm)
-		// rf.timer = 0
+		rf.StartSendAppendEntries(rf.CurrentTerm)
+		rf.timer = 0
 		rf.mu.Unlock()
 		rf.persist()
 	}

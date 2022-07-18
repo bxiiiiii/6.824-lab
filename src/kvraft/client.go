@@ -2,8 +2,6 @@ package kvraft
 
 import (
 	"crypto/rand"
-	"fmt"
-	// "fmt"
 	"math/big"
 	"time"
 
@@ -47,11 +45,14 @@ func (ck *Clerk) Get(key string) string {
 
 	for {
 		for i := range ck.servers {
-			args := GetArgs{key}
+			args := GetArgs{
+				Key: key,
+				Index: nrand(),
+			}
 			reply := GetReply{}
 			ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
-			if ok && reply.Err == "" {
-				fmt.Println("//successful.")
+			if ok && reply.Err == OK || reply.Err == ErrNoKey {
+				// fmt.Println("//successful.")
 				return reply.Value
 			}
 		}
@@ -77,12 +78,13 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				Key:   key,
 				Value: value,
 				Op:    op,
+				Index: nrand(),
 			}
 			reply := PutAppendReply{}
 			ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
-			fmt.Println("******************",ok, reply.Err)
-			if ok && reply.Err == "" {
-				fmt.Println("//successful.")
+			// fmt.Println("******************", ok, reply.Err)
+			if ok && reply.Err == OK {
+				// fmt.Println("//successful.")
 				return
 			}
 		}
