@@ -1,7 +1,6 @@
 package kvraft
 
 import (
-	// "fmt"
 	"fmt"
 	"log"
 	"time"
@@ -52,12 +51,18 @@ type KVServer struct {
 
 type RequestInfo struct {
 	Status bool
+	Rindex int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	_, Rstatus := kv.rf.GetState()
+	if !Rstatus {
+		reply.Err = ErrWrongLeader
+		return
+	}
 	kv.mu.Lock()
-	fmt.Println("GET: ", kv.record)
+	// DEBUG(dClient, "S%v get %v")
 	temRecord := make(map[int64]RequestInfo)
 	for k, v := range kv.record {
 		temRecord[k] = v
@@ -74,7 +79,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 					reply.Err = ErrNoKey
 					reply.Value = ""
 				}
-				return
 			} else {
 				kv.mu.Lock()
 				for !kv.record[args.Index].Status {
@@ -89,12 +93,9 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 				}
 				kv.mu.Unlock()
 			}
+			return
 		}
 	}
-
-	kv.mu.Lock()
-	kv.record[args.Index] = RequestInfo{false}
-	kv.mu.Unlock()
 
 	operation := Op{
 		Type:  "Get",
@@ -102,30 +103,56 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		Index: args.Index,
 	}
 	// fmt.Println("----", kv.storage)
-	_, _, isLeader := kv.rf.Start(operation)
+	i, _, isLeader := kv.rf.Start(operation)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
+	DEBUG(dLog2, "S%v get %v", kv.me, i)
+	kv.mu.Lock()
+	kv.record[args.Index] = RequestInfo{
+		Status: false,
+		Rindex: i,
+	}
+	kv.mu.Unlock()
 
 	kv.mu.Lock()
-	for !kv.record[args.Index].Status {
+	for _, ok := kv.record[args.Index]; ok && !kv.record[args.Index].Status; {
+		DEBUG(dPersist, "S%v %v", kv.me, kv.record)
+		DEBUG(dInfo, "S%v %v get is working ok:%v status:%v", kv.me, args.Index, ok, kv.record[args.Index].Status)
 		kv.cond.Wait()
 	}
-	if _, ok := kv.storage[args.Key]; ok {
-		reply.Err = OK
-		reply.Value = kv.storage[args.Key]
+	if _, ok := kv.record[args.Index]; !ok {
+		reply.Err = ErrWrongLeader
 	} else {
-		reply.Err = ErrNoKey
-		reply.Value = ""
+		if _, ok := kv.storage[args.Key]; ok {
+			reply.Err = OK
+			reply.Value = kv.storage[args.Key]
+		} else {
+			reply.Err = ErrNoKey
+			reply.Value = ""
+		}
+		DEBUG(dInfo, "S%v %v get is ok", kv.me, i)
 	}
+
+	for _, v := range kv.record {
+		fmt.Print(v)
+	}
+	fmt.Println()
 	kv.mu.Unlock()
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	_, Rstatus := kv.rf.GetState()
+	if !Rstatus {
+		reply.Err = ErrWrongLeader
+		return
+	}
 	kv.mu.Lock()
-	fmt.Println("PUT/APPEND: ", kv.record)
+	// fmt.Println("PUT/APPEND: ", kv.record)
+	// DEBUG(dClient, "S%v g/a %v--[%v][%v]", kv.me, args.Index, args.Key, args.Value)
+	// DEBUG(dLog, "S%v %v", kv.me, kv.record)
 	temRecord := make(map[int64]RequestInfo)
 	for k, v := range kv.record {
 		temRecord[k] = v
@@ -135,22 +162,22 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	for k, v := range temRecord {
 		if k == args.Index {
 			if v.Status {
+				DEBUG(dCommit, "S%v %v is ok", kv.me, args.Index)
 				reply.Err = OK
-				return
 			} else {
+				DEBUG(dDrop, "S%v %v is waiting", kv.me, args.Index)
 				kv.mu.Lock()
 				for !kv.record[args.Index].Status {
 					kv.cond.Wait()
 				}
+				// if kv.record[]
+				DEBUG(dCommit, "S%v %v is ok", kv.me, args.Index)
 				reply.Err = OK
 				kv.mu.Unlock()
 			}
+			return
 		}
 	}
-
-	kv.mu.Lock()
-	kv.record[args.Index] = RequestInfo{false}
-	kv.mu.Unlock()
 
 	operation := Op{
 		Type:  args.Op,
@@ -158,18 +185,37 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		Value: args.Value,
 		Index: args.Index,
 	}
-	_, _, isleader := kv.rf.Start(operation)
+	i, _, isleader := kv.rf.Start(operation)
 	if !isleader {
 		reply.Err = ErrWrongLeader
 		return
 	}
-
+	DEBUG(dLog2, "S%v p/a %v", kv.me, i)
 	kv.mu.Lock()
-	for !kv.record[args.Index].Status {
-		kv.cond.Wait()
+	kv.record[args.Index] = RequestInfo{
+		Status: false,
+		Rindex: i,
 	}
 	kv.mu.Unlock()
-	reply.Err = OK
+
+	kv.mu.Lock()
+	for _, ok := kv.record[args.Index]; ok && !kv.record[args.Index].Status; {
+		DEBUG(dPersist, "S%v %v", kv.me, kv.record)
+		DEBUG(dInfo, "S%v %v p/a is working ok:%v status:%v", kv.me, args.Index, ok, kv.record[args.Index].Status)
+		kv.cond.Wait()
+	}
+	if _, ok := kv.record[args.Index]; !ok {
+		reply.Err = ErrWrongLeader
+		DEBUG(dInfo, "S%v %v p/a is failed", kv.me, i)
+	} else {
+		reply.Err = OK
+		DEBUG(dInfo, "S%v %v p/a is ok", kv.me, i)
+	}
+	for _, v := range kv.record {
+		fmt.Print(v)
+	}
+	fmt.Println()
+	kv.mu.Unlock()
 }
 
 //
@@ -242,9 +288,22 @@ func (kv *KVServer) Apply() {
 			} else if op.Type == "Append" {
 				kv.storage[op.Key] += op.Value
 			}
-			kv.record[op.Index] = RequestInfo{true}
+			DEBUG(dLeader, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, op.Index, kv.record[op.Index].Status)
+			kv.record[op.Index] = RequestInfo{
+				Status: true,
+				Rindex: entry.CommandIndex,
+			}
+			for k, v := range kv.record {
+				if v.Rindex == entry.CommandIndex {
+					DEBUG(dError, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, k, v.Status)
+					if k != op.Index{
+						delete(kv.record, k)
+					}
+				}
+			}
+			DEBUG(dLog2, "S%v %v", kv.me, kv.record)
 			// kv.ApplyIdx = entry.CommandIndex
-			kv.cond.Signal()
+			kv.cond.Broadcast()
 			// fmt.Println("--", kv.storage)
 			kv.mu.Unlock()
 		}

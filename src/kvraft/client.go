@@ -40,14 +40,13 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-
 	// You will have to modify this function.
-
+	index := nrand()
 	for {
 		for i := range ck.servers {
 			args := GetArgs{
 				Key: key,
-				Index: nrand(),
+				Index: index,
 			}
 			reply := GetReply{}
 			ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
@@ -72,13 +71,14 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	index := nrand()
 	for {
 		for i := range ck.servers {
 			args := PutAppendArgs{
 				Key:   key,
 				Value: value,
 				Op:    op,
-				Index: nrand(),
+				Index: index,
 			}
 			reply := PutAppendReply{}
 			ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
