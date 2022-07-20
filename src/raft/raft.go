@@ -643,8 +643,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		en := Entries{command, term, index}
 		rf.Log[index] = en
 		DEBUG(dLog2, "S%v log: %v", rf.me, rf.Log)
-		rf.StartSendAppendEntries(rf.CurrentTerm)
-		rf.timer = 0
+		// rf.StartSendAppendEntries(rf.CurrentTerm)
+		// rf.timer = 0
+		if rf.timer < 50 {
+			rf.StartSendAppendEntries(rf.CurrentTerm)
+			rf.timer = 0
+		}
 		rf.mu.Unlock()
 		rf.persist()
 	}

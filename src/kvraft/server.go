@@ -1,7 +1,6 @@
 package kvraft
 
 import (
-	"fmt"
 	"log"
 	"time"
 
@@ -22,6 +21,12 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	}
 	return
 }
+
+const (
+	Completed     = "Completed"
+	InProgress    = "InProgress"
+	ErrorOccurred = "ErrorOccurred"
+)
 
 type Op struct {
 	// Your definitions here.
@@ -50,7 +55,7 @@ type KVServer struct {
 }
 
 type RequestInfo struct {
-	Status bool
+	Status string
 	Rindex int
 }
 
@@ -71,7 +76,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	for k, v := range temRecord {
 		if k == args.Index {
-			if v.Status {
+			if v.Status == Completed {
 				if _, ok := kv.storage[args.Key]; ok {
 					reply.Err = OK
 					reply.Value = kv.storage[args.Key]
@@ -79,11 +84,12 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 					reply.Err = ErrNoKey
 					reply.Value = ""
 				}
-			} else {
+			} else if v.Status == InProgress {
 				kv.mu.Lock()
-				for !kv.record[args.Index].Status {
+				for kv.record[args.Index].Status == InProgress {
 					kv.cond.Wait()
 				}
+				//TODO
 				if _, ok := kv.storage[args.Key]; ok {
 					reply.Err = OK
 					reply.Value = kv.storage[args.Key]
@@ -103,28 +109,29 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		Index: args.Index,
 	}
 	// fmt.Println("----", kv.storage)
+	kv.mu.Lock()
 	i, _, isLeader := kv.rf.Start(operation)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 	DEBUG(dLog2, "S%v get %v", kv.me, i)
-	kv.mu.Lock()
 	kv.record[args.Index] = RequestInfo{
-		Status: false,
+		Status: InProgress,
 		Rindex: i,
 	}
 	kv.mu.Unlock()
 
 	kv.mu.Lock()
-	for _, ok := kv.record[args.Index]; ok && !kv.record[args.Index].Status; {
+	// for _, ok := kv.record[args.Index]; ok && !kv.record[args.Index].Status; {
+	for kv.record[args.Index].Status == InProgress {
 		DEBUG(dPersist, "S%v %v", kv.me, kv.record)
-		DEBUG(dInfo, "S%v %v get is working ok:%v status:%v", kv.me, args.Index, ok, kv.record[args.Index].Status)
+		DEBUG(dInfo, "S%v %v get is working status:%v", kv.me, args.Index, kv.record[args.Index].Status)
 		kv.cond.Wait()
 	}
-	if _, ok := kv.record[args.Index]; !ok {
+	if kv.record[args.Index].Status == ErrorOccurred {
 		reply.Err = ErrWrongLeader
-	} else {
+	} else if kv.record[args.Index].Status == Completed {
 		if _, ok := kv.storage[args.Key]; ok {
 			reply.Err = OK
 			reply.Value = kv.storage[args.Key]
@@ -134,11 +141,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		}
 		DEBUG(dInfo, "S%v %v get is ok", kv.me, i)
 	}
-
-	for _, v := range kv.record {
-		fmt.Print(v)
-	}
-	fmt.Println()
 	kv.mu.Unlock()
 }
 
@@ -161,13 +163,13 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	for k, v := range temRecord {
 		if k == args.Index {
-			if v.Status {
+			if v.Status == Completed {
 				DEBUG(dCommit, "S%v %v is ok", kv.me, args.Index)
 				reply.Err = OK
-			} else {
+			} else if v.Status == InProgress {
 				DEBUG(dDrop, "S%v %v is waiting", kv.me, args.Index)
 				kv.mu.Lock()
-				for !kv.record[args.Index].Status {
+				for kv.record[args.Index].Status == InProgress {
 					kv.cond.Wait()
 				}
 				// if kv.record[]
@@ -185,36 +187,33 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		Value: args.Value,
 		Index: args.Index,
 	}
+	kv.mu.Lock()
 	i, _, isleader := kv.rf.Start(operation)
 	if !isleader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 	DEBUG(dLog2, "S%v p/a %v", kv.me, i)
-	kv.mu.Lock()
 	kv.record[args.Index] = RequestInfo{
-		Status: false,
+		Status: InProgress,
 		Rindex: i,
 	}
 	kv.mu.Unlock()
 
 	kv.mu.Lock()
-	for _, ok := kv.record[args.Index]; ok && !kv.record[args.Index].Status; {
+	// for _, ok := kv.record[args.Index]; ok && !kv.record[args.Index].Status; {
+	for kv.record[args.Index].Status == InProgress {
 		DEBUG(dPersist, "S%v %v", kv.me, kv.record)
-		DEBUG(dInfo, "S%v %v p/a is working ok:%v status:%v", kv.me, args.Index, ok, kv.record[args.Index].Status)
+		DEBUG(dInfo, "S%v %v p/a is working status:%v", kv.me, args.Index, kv.record[args.Index].Status)
 		kv.cond.Wait()
 	}
-	if _, ok := kv.record[args.Index]; !ok {
+	if kv.record[args.Index].Status == ErrorOccurred {
 		reply.Err = ErrWrongLeader
 		DEBUG(dInfo, "S%v %v p/a is failed", kv.me, i)
-	} else {
+	} else if kv.record[args.Index].Status == Completed {
 		reply.Err = OK
 		DEBUG(dInfo, "S%v %v p/a is ok", kv.me, i)
 	}
-	for _, v := range kv.record {
-		fmt.Print(v)
-	}
-	fmt.Println()
 	kv.mu.Unlock()
 }
 
@@ -274,7 +273,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	sync.Opts.DeadlockTimeout = time.Second
 
 	kv.record = make(map[int64]RequestInfo)
+	LOGinit()
 	go kv.Apply()
+	// go kv.CheckLeader()
 	return kv
 }
 
@@ -290,14 +291,19 @@ func (kv *KVServer) Apply() {
 			}
 			DEBUG(dLeader, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, op.Index, kv.record[op.Index].Status)
 			kv.record[op.Index] = RequestInfo{
-				Status: true,
+				Status: Completed,
 				Rindex: entry.CommandIndex,
 			}
 			for k, v := range kv.record {
 				if v.Rindex == entry.CommandIndex {
 					DEBUG(dError, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, k, v.Status)
-					if k != op.Index{
-						delete(kv.record, k)
+					if k != op.Index {
+						// delete(kv.record, k)
+						entry := RequestInfo{
+							Status: ErrorOccurred,
+							Rindex: v.Rindex,
+						}
+						kv.record[k] = entry
 					}
 				}
 			}
