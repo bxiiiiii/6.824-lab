@@ -5,6 +5,7 @@ import(
 	"strconv"
 	"time"
 	"fmt"
+	"sync"
 )
 // Retrieve the verbosity level from an environment variable
 func getVerbosity() int {
@@ -42,17 +43,23 @@ const (
 
 var debugStart time.Time
 var debugVerbosity int
+var mutex sync.Mutex
 
 func LOGinit() {
-	debugVerbosity = getVerbosity()
-	debugStart = time.Now()
-
+	mutex.Lock()
+	if debugVerbosity == 0{
+		debugVerbosity = getVerbosity()
+		debugStart = time.Now()
+	}
+	mutex.Unlock()
 	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
 }
 
 func DEBUG(topic logTopic, format string, a ...interface{}) {
-	// if debug >= 1 {
+	// if debugVerbosity > 1 {
+		mutex.Lock()
 		time := time.Since(debugStart).Microseconds()
+		mutex.Unlock()
 		time /= 100
 		prefix := fmt.Sprintf("%06d %v ", time, string(topic))
 		format = prefix + format
