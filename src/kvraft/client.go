@@ -3,7 +3,7 @@ package kvraft
 import (
 	"crypto/rand"
 	"math/big"
-	"time"
+	// "time"
 
 	"6.824/labrpc"
 )
@@ -42,6 +42,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	index := nrand()
+	DEBUG(dTrace, "S0 rq get %v", index)
 	for {
 		for i := range ck.servers {
 			args := GetArgs{
@@ -51,11 +52,12 @@ func (ck *Clerk) Get(key string) string {
 			reply := GetReply{}
 			ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
 			if ok && reply.Err == OK || reply.Err == ErrNoKey {
-				// fmt.Println("//successful.")
+				// fmt.Println("//5successful.")
+				DEBUG(dTrace, "S0 get %v is completed", index)
 				return reply.Value
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		// time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -72,6 +74,8 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 	index := nrand()
+
+	DEBUG(dTrace, "S0 rq p/a %v", index)
 	for {
 		for i := range ck.servers {
 			args := PutAppendArgs{
@@ -85,10 +89,11 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			// fmt.Println("******************", ok, reply.Err)
 			if ok && reply.Err == OK {
 				// fmt.Println("//successful.")
+				DEBUG(dTrace, "S0 p/a %v is completed", index)
 				return
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		// time.Sleep(100 * time.Millisecond)
 	}
 }
 
