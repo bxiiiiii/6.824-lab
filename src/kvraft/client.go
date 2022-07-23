@@ -3,7 +3,7 @@ package kvraft
 import (
 	"crypto/rand"
 	"math/big"
-	// "time"
+	"time"
 
 	"6.824/labrpc"
 )
@@ -46,18 +46,54 @@ func (ck *Clerk) Get(key string) string {
 	for {
 		for i := range ck.servers {
 			args := GetArgs{
-				Key: key,
+				Key:   key,
 				Index: index,
 			}
 			reply := GetReply{}
+			// ok, rreply := ck.CallGet(i, &args, &reply)
+			// if ok {
+			// 	return rreply.Value
+			// }
 			ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
-			if ok && reply.Err == OK || reply.Err == ErrNoKey {
-				// fmt.Println("//5successful.")
-				DEBUG(dTrace, "S0 get %v is completed", index)
-				return reply.Value
+			DEBUG(dError, "S%v get %v ok:%v err:%v", i, args.Index, ok, reply.Err)
+			if !ok {
+				DEBUG(dClient, "")
+				// newreply := GetReply{}
+				// return ck.CallGet(i, args, &newreply)
+			} else {
+				if reply.Err == OK || reply.Err == ErrNoKey {
+					DEBUG(dTrace, "S0 get %v is completed", args.Index)
+					return reply.Value
+				} else if reply.Err == ErrorTimeDeny {
+					time.Sleep(time.Second * 3)
+				}
 			}
 		}
-		// time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (ck *Clerk) CallGet(i int, args *GetArgs, reply *GetReply) (bool, GetReply) {
+	ok := ck.servers[i].Call("KVServer.Get", args, reply)
+	DEBUG(dError, "S%v get %v ok:%v err:%v", i, args.Index, ok, reply.Err)
+	if !ok {
+		newreply := GetReply{}
+		return ck.CallGet(i, args, &newreply)
+	} else {
+		if reply.Err == OK || reply.Err == ErrNoKey {
+			DEBUG(dTrace, "S0 get %v is completed", args.Index)
+			return true, *reply
+		} else if reply.Err == ErrWrongLeader {
+			return false, *reply
+		} else if reply.Err == ErrorOccurred {
+			return false, *reply
+		} else if reply.Err == ErrorTimeDeny {
+			time.Sleep(time.Second * 3)
+			return ck.CallGet(i, args, reply)
+		} else {
+			time.Sleep(100 * time.Millisecond)
+			return ck.CallGet(i, args, reply)
+		}
 	}
 }
 
@@ -74,8 +110,7 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 	index := nrand()
-
-	DEBUG(dTrace, "S0 rq p/a %v", index)
+	// DEBUG(dTrace, "S0 rq p/a %v", index)
 	for {
 		for i := range ck.servers {
 			args := PutAppendArgs{
@@ -85,15 +120,49 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				Index: index,
 			}
 			reply := PutAppendReply{}
+			// ok, _ := ck.CallPutAppend(i, &args, &reply)
+			// if ok {
+			// 	return
+			// }
 			ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
-			// fmt.Println("******************", ok, reply.Err)
-			if ok && reply.Err == OK {
-				// fmt.Println("//successful.")
-				DEBUG(dTrace, "S0 p/a %v is completed", index)
-				return
+			DEBUG(dError, "S%v p/a %v ok:%v err:%v", i, args.Index, ok, reply.Err)
+			if !ok {
+				DEBUG(dClient, "")
+			} else {
+				if reply.Err == OK {
+					DEBUG(dTrace, "S0 p/a %v is completed", args.Index)
+					return
+				} else if reply.Err == ErrorTimeDeny {
+					time.Sleep(time.Second * 3)
+				}
 			}
 		}
-		// time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (ck *Clerk) CallPutAppend(i int, args *PutAppendArgs, reply *PutAppendReply) (bool, PutAppendReply) {
+	ok := ck.servers[i].Call("KVServer.PutAppend", args, reply)
+	DEBUG(dError, "S%v p/a %v ok:%v err:%v", i, args.Index, ok, reply.Err)
+	if !ok {
+		newreply := PutAppendReply{}
+		return ck.CallPutAppend(i, args, &newreply)
+	} else {
+		if reply.Err == OK {
+			DEBUG(dTrace, "S0 p/a %v is completed", args.Index)
+			return true, *reply
+		} else if reply.Err == ErrWrongLeader {
+			return false, *reply
+		} else if reply.Err == ErrorOccurred {
+			return false, *reply
+		} else if reply.Err == ErrorTimeDeny {
+			time.Sleep(time.Second * 3)
+			newreply := PutAppendReply{}
+			return ck.CallPutAppend(i, args, &newreply)
+		} else {
+			newreply := PutAppendReply{}
+			return ck.CallPutAppend(i, args, &newreply)
+		}
 	}
 }
 

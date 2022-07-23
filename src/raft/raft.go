@@ -136,7 +136,7 @@ func (rf *Raft) persist() {
 	// Your code here (2C).
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	rf.mu.Lock()
+	// rf.mu.Lock()
 	e.Encode(rf.CurrentTerm)
 	e.Encode(rf.VotedFor)
 	e.Encode(rf.Log)
@@ -144,7 +144,7 @@ func (rf *Raft) persist() {
 	data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
 	rf.persister.SaveStateAndSnapshot(data, rf.SnapshotData)
-	rf.mu.Unlock()
+	// rf.mu.Unlock()
 }
 
 //
@@ -241,8 +241,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 			delete(rf.Log, entry.Index)
 		}
 	}
-	rf.mu.Unlock()
 	rf.persist()
+	rf.mu.Unlock()
 }
 
 //
@@ -366,7 +366,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.CommitIndex = rf.commitIndex
 	reply.CommitTerm = rf.Log[rf.commitIndex].Term
 	// DEBUG(dVote, "S%v T%v Granting Vote to S%v", rf.me, rf.CurrentTerm, rf.VotedFor)
-	go rf.persist()
+	rf.persist()
 	rf.mu.Unlock()
 }
 
@@ -456,8 +456,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	if rf.LastLogIndex < rf.LastIncludedIndex {
 		rf.LastLogIndex = rf.LastIncludedIndex
 	}
-	rf.mu.Unlock()
 	rf.persist()
+	rf.mu.Unlock()
 
 	go func() {
 		rf.mu.Lock()
@@ -507,8 +507,8 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 		reply.CommitIndex = rf.commitIndex
 		reply.CommitTerm = rf.Log[rf.commitIndex].Term
 		reply.ConflictLogIndex = rf.LastLogIndex
-		rf.mu.Unlock()
 		rf.persist()
+		rf.mu.Unlock()
 		return
 	} else if args.Term < rf.CurrentTerm {
 		// DEBUG(dTrace, "S%v reject term in ae f-l:%v %v", rf.me, rf.CurrentTerm, args.Term)
@@ -516,8 +516,8 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 		reply.Term = rf.CurrentTerm
 		reply.CommitIndex = rf.commitIndex
 		reply.CommitTerm = rf.Log[rf.commitIndex].Term
-		rf.mu.Unlock()
 		rf.persist()
+		rf.mu.Unlock()
 		return
 	} else {
 		if rf.state == Sfollower && rf.leader != args.LeaderId {
@@ -578,7 +578,7 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 						break
 					}
 				}
-				go rf.persist()
+				rf.persist()
 				reply.Success = true
 				reply.Term = rf.CurrentTerm
 				// DEBUG(dTrace, "S%v copy succ in ae log : %v ll :%v", rf.me, rf.Log, rf.LastLogIndex)
@@ -649,8 +649,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			rf.StartSendAppendEntries(rf.CurrentTerm)
 			rf.timer = 0
 		}
-		rf.mu.Unlock()
 		rf.persist()
+		rf.mu.Unlock()
 	}
 
 	return index, term, isLeader
@@ -693,13 +693,15 @@ func (rf *Raft) ticker() {
 			if isleader {
 				rf.timer = 0
 				go func() {
-					go rf.persist()
+					rf.mu.Lock()
+					rf.persist()
+					rf.mu.Unlock()
 					rf.StartSendAppendEntries(tmterm)
 
 				}()
 			} else {
 				rf.becomeCandidate()
-				go rf.persist()
+				rf.persist()
 				go func() {
 					rf.sendvote()
 				}()
@@ -788,7 +790,7 @@ func (rf *Raft) becomeCandidate() {
 	// tmterm := rf.CurrentTerm
 	// DEBUG(dTimer, "S%v timeout Reset: %v", rf.me, rf.timeout)
 	DEBUG(dTerm, "S%v Converting to Candidate, calling election T:%v", rf.me, rf.CurrentTerm)
-	go rf.persist()
+	rf.persist()
 }
 
 func (rf *Raft) becomeFowllower(leaderId int, Term int) {
@@ -796,7 +798,7 @@ func (rf *Raft) becomeFowllower(leaderId int, Term int) {
 	if Term > rf.CurrentTerm {
 		rf.VotedFor = -1
 		rf.CurrentTerm = Term
-		go rf.persist()
+		rf.persist()
 	}
 	rf.state = Sfollower
 	rf.leader = leaderId
@@ -986,7 +988,7 @@ func (rf *Raft) SendAppendEntriesTo(i int, tmterm int) {
 				}
 				rf.LastLogIndex = rf.commitIndex
 				rf.becomeFowllower(-1, reply.Term)
-				go rf.persist()
+				rf.persist()
 			} else if rf.Log[reply.CommitIndex].Term != reply.CommitTerm {
 				for _, en := range rf.Log {
 					if en.Index > rf.commitIndex {
@@ -995,12 +997,12 @@ func (rf *Raft) SendAppendEntriesTo(i int, tmterm int) {
 				}
 				rf.LastLogIndex = rf.commitIndex
 				rf.becomeFowllower(-1, reply.Term)
-				go rf.persist()
+				rf.persist()
 			}
 			// DEBUG(dLog2, "S%v log: %v", rf.me, rf.Log)
 			if reply.Term > rf.CurrentTerm {
 				rf.becomeFowllower(-1, reply.Term)
-				go rf.persist()
+				rf.persist()
 			} else {
 				rf.nextIndex[i] = reply.ConflictLogIndex
 				// DEBUG(dError, "S%v i: %v, nextidx: %v", rf.me, i, rf.nextIndex[i])

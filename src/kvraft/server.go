@@ -26,6 +26,7 @@ const (
 	Completed     = "Completed"
 	InProgress    = "InProgress"
 	ErrorOccurred = "ErrorOccurred"
+	ErrorTimeDeny = "ErrorTimeDeny"
 )
 
 type Op struct {
@@ -48,9 +49,10 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	storage map[string]string
-	cond    *dsync.Cond
-	record  map[int64]RequestInfo
+	storage   map[string]string
+	cond      *dsync.Cond
+	record    map[int64]RequestInfo
+	StartTime time.Time
 }
 
 type RequestInfo struct {
@@ -61,11 +63,11 @@ type RequestInfo struct {
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	// timer := 0
-	_, Rstatus := kv.rf.GetState()
-	if !Rstatus {
-		reply.Err = ErrWrongLeader
-		return
-	}
+	// _, Rstatus := kv.rf.GetState()
+	// if !Rstatus {
+	// 	reply.Err = ErrWrongLeader
+	// 	return
+	// }
 	kv.mu.Lock()
 	// DEBUG(dClient, "S%v get %v")
 	for k, v := range kv.record {
@@ -87,7 +89,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 					// 	DEBUG(dCommit, "S%v %v is failed", kv.me, args.Index)
 					// 	reply.Err = ErrWrongLeader
 					// }
-					
+
 					kv.cond.Wait()
 				}
 				if kv.record[args.Index].Status == Completed {
@@ -102,7 +104,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 				} else if kv.record[args.Index].Status == ErrorOccurred {
 					DEBUG(dCommit, "S%v get %v is failed", kv.me, args.Index)
 					delete(kv.record, args.Index)
-					reply.Err = ErrWrongLeader
+					reply.Err = ErrorOccurred
 				}
 			}
 			kv.mu.Unlock()
@@ -139,9 +141,9 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		kv.cond.Wait()
 	}
 	if kv.record[args.Index].Status == ErrorOccurred {
-		DEBUG(dCommit, "S%v %v get is failed", kv.me, args.Index)
+		DEBUG(dCommit, "S%v get %v is failed", kv.me, args.Index)
 		delete(kv.record, args.Index)
-		reply.Err = ErrWrongLeader
+		reply.Err = ErrorOccurred
 	} else if kv.record[args.Index].Status == Completed {
 		if _, ok := kv.storage[args.Key]; ok {
 			reply.Err = OK
@@ -150,7 +152,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			reply.Err = ErrNoKey
 			reply.Value = ""
 		}
-		DEBUG(dInfo, "S%v %v get is ok", kv.me, i)
+		DEBUG(dInfo, "S%v get %v is ok", kv.me, i)
 	}
 	kv.mu.Unlock()
 }
@@ -158,9 +160,19 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	// timer := 0
-	_, Rstatus := kv.rf.GetState()
-	if !Rstatus {
-		reply.Err = ErrWrongLeader
+	// _, Rstatus := kv.rf.GetState()
+	// if !Rstatus {
+	// 	reply.Err = ErrWrongLeader
+	// 	return
+	// }
+	if time.Since(kv.StartTime).Seconds() < 1 {
+		DEBUG(dError, "S%v deny %v", kv.me, args.Index)
+		reply.Err = ErrorTimeDeny
+		return
+	}
+	if time.Since(kv.StartTime).Seconds() < 1 {
+		DEBUG(dError, "S%v deny %v", kv.me, args.Index)
+		reply.Err = ErrorTimeDeny
 		return
 	}
 	kv.mu.Lock()
@@ -187,7 +199,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				} else if kv.record[args.Index].Status == ErrorOccurred {
 					DEBUG(dCommit, "S%v p/a %v is failed", kv.me, args.Index)
 					delete(kv.record, args.Index)
-					reply.Err = ErrWrongLeader
+					reply.Err = ErrorOccurred
 				}
 			}
 			kv.mu.Unlock()
@@ -226,7 +238,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if kv.record[args.Index].Status == ErrorOccurred {
 		DEBUG(dInfo, "S%v p/a %v is failed", kv.me, i)
 		delete(kv.record, args.Index)
-		reply.Err = ErrWrongLeader
+		reply.Err = ErrorOccurred
 	} else if kv.record[args.Index].Status == Completed {
 		DEBUG(dInfo, "S%v p/a %v is ok", kv.me, i)
 		reply.Err = OK
@@ -289,6 +301,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// sync.Opts.DeadlockTimeout = time.Second
 
 	kv.record = make(map[int64]RequestInfo)
+	kv.StartTime = time.Now()
 	LOGinit()
 	go kv.Apply()
 	go kv.Timer()
@@ -331,7 +344,6 @@ func (kv *KVServer) Apply() {
 
 func (kv *KVServer) Timer() {
 	for {
-		time.Sleep(5 * time.Second)
 		operation := Op{
 			Type:  "Timer",
 			Index: int64(time.Now().Second()),
@@ -340,5 +352,6 @@ func (kv *KVServer) Timer() {
 		if isleader {
 			DEBUG(dTimer, "S%v add a Timer i:%v", kv.me, i)
 		}
+		time.Sleep(2 * time.Second)
 	}
 }
