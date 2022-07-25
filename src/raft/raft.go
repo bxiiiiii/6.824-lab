@@ -692,10 +692,8 @@ func (rf *Raft) ticker() {
 		if rf.timer >= rf.timeout {
 			if isleader {
 				rf.timer = 0
+				rf.persist()
 				go func() {
-					rf.mu.Lock()
-					rf.persist()
-					rf.mu.Unlock()
 					rf.StartSendAppendEntries(tmterm)
 
 				}()
@@ -914,11 +912,11 @@ func (rf *Raft) applyGoro(applyCh chan ApplyMsg) {
 }
 
 func (rf *Raft) SendAppendEntriesTo(i int, tmterm int) {
+	rf.mu.Lock()
 	args := AppendEntiresArgs{}
 	reply := AppendEntiresReply{}
 	args.Term = tmterm
 	args.LeaderId = rf.me
-	rf.mu.Lock()
 	args.LeaderCommit = rf.commitIndex
 	snapflag := 0
 	if rf.LastLogIndex >= rf.nextIndex[i] {
