@@ -3,7 +3,7 @@ package kvraft
 import (
 	"crypto/rand"
 	"math/big"
-	"time"
+	// "time"
 
 	"6.824/labrpc"
 )
@@ -50,51 +50,53 @@ func (ck *Clerk) Get(key string) string {
 				Index: index,
 			}
 			reply := GetReply{}
-			// ok, rreply := ck.CallGet(i, &args, &reply)
-			// if ok {
-			// 	return rreply.Value
-			// }
-			ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
-			DEBUG(dError, "S%v get %v ok:%v err:%v", i, args.Index, ok, reply.Err)
-			if !ok {
-				DEBUG(dClient, "")
-				// newreply := GetReply{}
-				// return ck.CallGet(i, args, &newreply)
-			} else {
-				if reply.Err == OK || reply.Err == ErrNoKey {
-					DEBUG(dTrace, "S0 get %v is completed", args.Index)
-					return reply.Value
-				} else if reply.Err == ErrorTimeDeny {
-					time.Sleep(time.Second * 3)
-				}
+			ok, value := ck.CallGet(i, &args, &reply, 0)
+			if ok {
+				return value
 			}
+			// ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
+			// DEBUG(dError, "S%v get %v ok:%v err:%v", i, args.Index, ok, reply.Err)
+			// if !ok {
+			// 	// DEBUG(dClient, "")
+			// 	// newreply := GetReply{}
+			// 	// return ck.CallGet(i, args, &newreply)
+			// } else {
+			// 	if reply.Err == OK || reply.Err == ErrNoKey {
+			// 		DEBUG(dTrace, "S0 get %v is completed", args.Index)
+			// 		return reply.Value
+			// 	} else if reply.Err == ErrorTimeDeny {
+			// 		time.Sleep(time.Second * 3)
+			// 	}
+			// }
 		}
-		time.Sleep(100 * time.Millisecond)
+		// time.Sleep(100 * time.Millisecond)
 	}
 }
 
-func (ck *Clerk) CallGet(i int, args *GetArgs, reply *GetReply) (bool, GetReply) {
+func (ck *Clerk) CallGet(i int, args *GetArgs, reply *GetReply, timer int) (bool, string) {
+	if timer > 3{
+		return false, ""
+	}
 	ok := ck.servers[i].Call("KVServer.Get", args, reply)
-	DEBUG(dError, "S%v get %v ok:%v err:%v", i, args.Index, ok, reply.Err)
+	// DEBUG(dError, "S%v get %v ok:%v err:%v", i, args.Index, ok, reply.Err)
 	if !ok {
 		newreply := GetReply{}
-		return ck.CallGet(i, args, &newreply)
+		return ck.CallGet(i, args, &newreply, timer+1)
 	} else {
 		if reply.Err == OK || reply.Err == ErrNoKey {
 			DEBUG(dTrace, "S0 get %v is completed", args.Index)
-			return true, *reply
+			return true, reply.Value
 		} else if reply.Err == ErrWrongLeader {
-			return false, *reply
+			return false, ""
 		} else if reply.Err == ErrorOccurred {
-			return false, *reply
+			return false, ""
 		} else if reply.Err == ErrorTimeDeny {
-			time.Sleep(time.Second * 3)
-			return ck.CallGet(i, args, reply)
-		} else {
-			time.Sleep(100 * time.Millisecond)
-			return ck.CallGet(i, args, reply)
+			// time.Sleep(time.Second * 3)
+			newreply := GetReply{}
+			return ck.CallGet(i, args, &newreply, timer+1)
 		}
 	}
+	return false, ""
 }
 
 //
@@ -120,50 +122,51 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				Index: index,
 			}
 			reply := PutAppendReply{}
-			// ok, _ := ck.CallPutAppend(i, &args, &reply)
-			// if ok {
-			// 	return
-			// }
-			ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
-			DEBUG(dError, "S%v p/a %v ok:%v err:%v", i, args.Index, ok, reply.Err)
-			if !ok {
-				DEBUG(dClient, "")
-			} else {
-				if reply.Err == OK {
-					DEBUG(dTrace, "S0 p/a %v is completed", args.Index)
-					return
-				} else if reply.Err == ErrorTimeDeny {
-					time.Sleep(time.Second * 3)
-				}
+			ok := ck.CallPutAppend(i, &args, &reply, 0)
+			if ok {
+				return
 			}
+			// ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
+			// DEBUG(dError, "S%v p/a %v ok:%v err:%v", i, args.Index, ok, reply.Err)
+			// if ok {
+			// // 	DEBUG(dClient, "")
+			// // } else {
+			// 	if reply.Err == OK {
+			// 		DEBUG(dTrace, "S0 p/a %v is completed", args.Index)
+			// 		return
+			// 	} else if reply.Err == ErrorTimeDeny {
+			// 		time.Sleep(time.Second * 1)
+			// 	}
+			// }
 		}
-		time.Sleep(100 * time.Millisecond)
+		// time.Sleep(100 * time.Millisecond)
 	}
 }
 
-func (ck *Clerk) CallPutAppend(i int, args *PutAppendArgs, reply *PutAppendReply) (bool, PutAppendReply) {
+func (ck *Clerk) CallPutAppend(i int, args *PutAppendArgs, reply *PutAppendReply, timer int) bool {
+	if timer > 3{
+		return false
+	}
 	ok := ck.servers[i].Call("KVServer.PutAppend", args, reply)
-	DEBUG(dError, "S%v p/a %v ok:%v err:%v", i, args.Index, ok, reply.Err)
+	// DEBUG(dError, "S%v p/a %v ok:%v err:%v", i, args.Index, ok, reply.Err)
 	if !ok {
 		newreply := PutAppendReply{}
-		return ck.CallPutAppend(i, args, &newreply)
+		return ck.CallPutAppend(i, args, &newreply, timer+1)
 	} else {
 		if reply.Err == OK {
 			DEBUG(dTrace, "S0 p/a %v is completed", args.Index)
-			return true, *reply
+			return true
 		} else if reply.Err == ErrWrongLeader {
-			return false, *reply
+			return false
 		} else if reply.Err == ErrorOccurred {
-			return false, *reply
+			return false
 		} else if reply.Err == ErrorTimeDeny {
-			time.Sleep(time.Second * 3)
+			// time.Sleep(time.Second * 1)
 			newreply := PutAppendReply{}
-			return ck.CallPutAppend(i, args, &newreply)
-		} else {
-			newreply := PutAppendReply{}
-			return ck.CallPutAppend(i, args, &newreply)
+			return ck.CallPutAppend(i, args, &newreply, timer+1)
 		}
 	}
+	return false
 }
 
 func (ck *Clerk) Put(key string, value string) {

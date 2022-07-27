@@ -4,13 +4,13 @@ import (
 	"log"
 	"time"
 
-	dsync "sync"
+	"sync"
 	"sync/atomic"
 
 	"6.824/labgob"
 	"6.824/labrpc"
 	"6.824/raft"
-	sync "github.com/sasha-s/go-deadlock"
+	// sync "github.com/sasha-s/go-deadlock"
 )
 
 const Debug = false
@@ -49,15 +49,18 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	storage   map[string]string
-	cond      *dsync.Cond
-	record    map[int64]RequestInfo
-	StartTime time.Time
+	storage    map[string]string
+	cond       *sync.Cond
+	record     map[int64]RequestInfo
+	StartTime  time.Time
+	StartTimer int64
+	Index      int
 }
 
 type RequestInfo struct {
 	Status string
 	Rindex int
+	Type string
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -69,6 +72,12 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// 	return
 	// }
 	kv.mu.Lock()
+	if _, ok := kv.record[kv.StartTimer]; !ok {
+		reply.Err = ErrorTimeDeny
+		DEBUG(dPersist, "S%v get deny %v", kv.me, args.Index)
+		kv.mu.Unlock()
+		return
+	}
 	// DEBUG(dClient, "S%v get %v")
 	for k, v := range kv.record {
 		if k == args.Index {
@@ -165,17 +174,13 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// 	reply.Err = ErrWrongLeader
 	// 	return
 	// }
-	if time.Since(kv.StartTime).Seconds() < 1 {
-		DEBUG(dError, "S%v deny %v", kv.me, args.Index)
-		reply.Err = ErrorTimeDeny
-		return
-	}
-	if time.Since(kv.StartTime).Seconds() < 1 {
-		DEBUG(dError, "S%v deny %v", kv.me, args.Index)
-		reply.Err = ErrorTimeDeny
-		return
-	}
 	kv.mu.Lock()
+	if _, ok := kv.record[kv.StartTimer]; !ok {
+		DEBUG(dPersist, "S%v p/a deny %v", kv.me, args.Index)
+		reply.Err = ErrorTimeDeny
+		kv.mu.Unlock()
+		return
+	}
 	// DEBUG(dClient, "S%v g/a %v--[%v][%v]", kv.me, args.Index, args.Key, args.Value)
 	// DEBUG(dLog, "S%v %v", kv.me, kv.record)
 	for k, v := range kv.record {
@@ -297,11 +302,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	kv.storage = make(map[string]string)
-	kv.cond = dsync.NewCond(&kv.mu)
+	kv.cond = sync.NewCond(&kv.mu)
 	// sync.Opts.DeadlockTimeout = time.Second
 
 	kv.record = make(map[int64]RequestInfo)
 	kv.StartTime = time.Now()
+	kv.StartTimer = -1
+	DEBUG(dTrace, "S%v Started timer: %v record:%v", kv.me, kv.StartTimer, kv.record)
 	LOGinit()
 	go kv.Apply()
 	go kv.Timer()
@@ -317,12 +324,19 @@ func (kv *KVServer) Apply() {
 				kv.storage[op.Key] = op.Value
 			} else if op.Type == "Append" {
 				kv.storage[op.Key] += op.Value
+			} else if op.Type == "LeaderTimer" {
+				if kv.Index == entry.CommandIndex || kv.StartTimer == -1{
+					kv.StartTimer = op.Index
+					DEBUG(dClient, "S%v timer: %v record:%v", kv.me, kv.StartTimer, kv.record)
+				}
 			}
 			DEBUG(dLeader, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, op.Index, kv.record[op.Index].Status)
 			kv.record[op.Index] = RequestInfo{
 				Status: Completed,
 				Rindex: entry.CommandIndex,
+				Type: op.Type,
 			}
+			// if op.Type != "Timer" {
 			for k, v := range kv.record {
 				if v.Rindex == entry.CommandIndex {
 					DEBUG(dError, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, k, v.Status)
@@ -330,11 +344,13 @@ func (kv *KVServer) Apply() {
 						entry := RequestInfo{
 							Status: ErrorOccurred,
 							Rindex: v.Rindex,
+							Type: v.Type,
 						}
 						kv.record[k] = entry
 					}
 				}
 			}
+			// }
 			// DEBUG(dLog2, "S%v %v", kv.me, kv.record)
 			kv.cond.Broadcast()
 			kv.mu.Unlock()
@@ -344,14 +360,43 @@ func (kv *KVServer) Apply() {
 
 func (kv *KVServer) Timer() {
 	for {
+		if kv.killed() {
+			return
+		}
+		kv.mu.Lock()
+		if kv.StartTimer != -1 {
+			kv.mu.Unlock()
+			break
+		}
+		kv.mu.Unlock()
+		Operation := Op{
+			Type:  "LeaderTimer",
+			Index: nrand(),
+		}
+		i, _, isleader := kv.rf.Start(Operation)
+		if isleader {
+			DEBUG(dTimer, "S%v add a Leader Timer i:%v", kv.me, i)
+			kv.mu.Lock()
+			kv.Index = i
+			kv.StartTimer = Operation.Index
+			kv.mu.Unlock()
+			break
+		} else {
+			time.Sleep(time.Second)
+		}
+	}
+	for {
+		time.Sleep(2 * time.Second)
+		if kv.killed() {
+			return
+		}
 		operation := Op{
 			Type:  "Timer",
-			Index: int64(time.Now().Second()),
+			Index: nrand(),
 		}
 		i, _, isleader := kv.rf.Start(operation)
 		if isleader {
 			DEBUG(dTimer, "S%v add a Timer i:%v", kv.me, i)
 		}
-		time.Sleep(2 * time.Second)
 	}
 }

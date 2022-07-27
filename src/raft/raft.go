@@ -778,12 +778,12 @@ func (rf *Raft) becomeLeader() {
 	}
 }
 func (rf *Raft) becomeCandidate() {
-	rand.Seed(time.Now().Local().UnixMicro())
+	rand.Seed(time.Now().Unix())
 	rf.CurrentTerm++
 	rf.VotedFor = rf.me
 	rf.state = Scandidate
 	rf.votes = 1
-	rf.timeout = rand.Intn(100) + 400
+	rf.timeout = rand.Intn(200) + 400
 	rf.timer = 0
 	// tmterm := rf.CurrentTerm
 	// DEBUG(dTimer, "S%v timeout Reset: %v", rf.me, rf.timeout)
@@ -792,7 +792,7 @@ func (rf *Raft) becomeCandidate() {
 }
 
 func (rf *Raft) becomeFowllower(leaderId int, Term int) {
-	rand.Seed(time.Now().Local().UnixMicro())
+	rand.Seed(time.Now().Unix())
 	if Term > rf.CurrentTerm {
 		rf.VotedFor = -1
 		rf.CurrentTerm = Term
@@ -801,7 +801,7 @@ func (rf *Raft) becomeFowllower(leaderId int, Term int) {
 	rf.state = Sfollower
 	rf.leader = leaderId
 
-	rf.timeout = rand.Intn(100) + 400
+	rf.timeout = rand.Intn(200) + 400
 	rf.timer = 0
 	// DEBUG(dTimer, "S%v timeout Reset: %v", rf.me, rf.timeout)
 }
