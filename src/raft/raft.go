@@ -136,10 +136,19 @@ func (rf *Raft) persist() {
 	// Your code here (2C).
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
+	tem := make(map[int]Entries)
+	for k, v := range rf.Log{
+		entry := Entries{
+			Command: v.Command,
+			Index: v.Index,
+			Term: v.Term,
+		}
+		tem[k] = entry
+	}
 	// rf.mu.Lock()
 	e.Encode(rf.CurrentTerm)
 	e.Encode(rf.VotedFor)
-	e.Encode(rf.Log)
+	e.Encode(tem)
 	e.Encode(rf.LastLogIndex)
 	data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
@@ -168,7 +177,12 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.CurrentTerm = currentTerm
 		rf.VotedFor = votedFor
 		for _, en := range log {
-			rf.Log[en.Index] = en
+			entry := Entries{
+				Command: en.Command,
+				Index: en.Index,
+				Term: en.Term,
+			}
+			rf.Log[en.Index] = entry
 		}
 		rf.LastLogIndex = lastLogIndex
 		rf.mu.Unlock()
@@ -560,7 +574,12 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 				for i, entry := range args.AppendEntries {
 					if rf.LastLogIndex+1 <= entry.Index {
 						for _, en := range args.AppendEntries[i:] {
-							rf.Log[en.Index] = en
+							entry := Entries{
+								Command: en.Command,
+								Index: en.Index,
+								Term: en.Term,
+							}
+							rf.Log[en.Index] = entry
 						}
 						rf.LastLogIndex = args.AppendEntries[len(args.AppendEntries)-1].Index
 						break
@@ -572,7 +591,12 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 							}
 						}
 						for _, en := range args.AppendEntries[i:] {
-							rf.Log[en.Index] = en
+							entry := Entries{
+								Command: en.Command,
+								Index: en.Index,
+								Term: en.Term,
+							}
+							rf.Log[en.Index] = entry
 						}
 						rf.LastLogIndex = args.AppendEntries[len(args.AppendEntries)-1].Index
 						break
@@ -886,7 +910,12 @@ func (rf *Raft) applyGoro(applyCh chan ApplyMsg) {
 		commitIndex := rf.commitIndex
 		log := make(map[int]Entries)
 		for _, en := range rf.Log {
-			log[en.Index] = en
+			entry := Entries{
+				Command: en.Command,
+				Index: en.Index,
+				Term: en.Term,
+			}
+			log[en.Index] = entry
 		}
 		rf.mu.Unlock()
 		for lastApplied < commitIndex {
@@ -934,7 +963,12 @@ func (rf *Raft) SendAppendEntriesTo(i int, tmterm int) {
 			snapflag = rf.LastIncludedIndex
 		}
 		for idx := rf.nextIndex[i]; idx <= rf.LastLogIndex; idx++ {
-			args.AppendEntries = append(args.AppendEntries, rf.Log[idx])
+			entry := Entries{
+				Command: rf.Log[idx].Command,
+				Index: rf.Log[idx].Index,
+				Term: rf.Log[idx].Term,
+			}
+			args.AppendEntries = append(args.AppendEntries, entry)
 		}
 	}
 	if rf.nextIndex[i] == 0 {
