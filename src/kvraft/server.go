@@ -134,10 +134,14 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 	DEBUG(dLog2, "S%v get %v", kv.me, i)
-	kv.record[args.Index] = RequestInfo{
-		Status: InProgress,
-		Rindex: i,
-	}
+	var entry RequestInfo
+	entry.Rindex = i
+	entry.Status = InProgress
+	// kv.record[args.Index] = RequestInfo{
+	// 	Status: InProgress,
+	// 	Rindex: i,
+	// }
+	kv.record[args.Index] = entry
 
 	for kv.record[args.Index].Status == InProgress {
 		// DEBUG(dPersist, "S%v %v", kv.me, kv.record)
@@ -225,10 +229,14 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 	DEBUG(dLog2, "S%v p/a %v", kv.me, i)
-	kv.record[args.Index] = RequestInfo{
-		Status: InProgress,
-		Rindex: i,
-	}
+	var req RequestInfo
+	req.Status = InProgress
+	req.Rindex = i
+	kv.record[args.Index] = req
+	// kv.record[args.Index] = RequestInfo{
+	// 	Status: InProgress,
+	// 	Rindex: i,
+	// }
 	// for _, ok := kv.record[args.Index]; ok && !kv.record[args.Index].Status; {
 	for kv.record[args.Index].Status == InProgress {
 		// DEBUG(dPersist, "S%v %v", kv.me, kv.record)
@@ -331,22 +339,31 @@ func (kv *KVServer) Apply() {
 				}
 			}
 			DEBUG(dLeader, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, op.Index, kv.record[op.Index].Status)
-			kv.record[op.Index] = RequestInfo{
-				Status: Completed,
-				Rindex: entry.CommandIndex,
-				Type: op.Type,
-			}
+			// kv.record[op.Index] = RequestInfo{
+			// 	Status: Completed,
+			// 	Rindex: entry.CommandIndex,
+			// 	Type: op.Type,
+			// }
+			var req RequestInfo
+			req.Rindex = entry.CommandIndex
+			req.Status = Completed
+			req.Type = op.Type
+			kv.record[op.Index] = req
 			// if op.Type != "Timer" {
 			for k, v := range kv.record {
 				if v.Rindex == entry.CommandIndex {
 					DEBUG(dError, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, k, v.Status)
 					if k != op.Index {
-						entry := RequestInfo{
-							Status: ErrorOccurred,
-							Rindex: v.Rindex,
-							Type: v.Type,
-						}
-						kv.record[k] = entry
+						// entry := RequestInfo{
+						// 	Status: ErrorOccurred,
+						// 	Rindex: v.Rindex,
+						// 	Type: v.Type,
+						// }
+						var req1 RequestInfo
+						req1.Rindex = v.Rindex
+						req1.Status = ErrorOccurred
+						req1.Type = v.Type
+						kv.record[k] = req1
 					}
 				}
 			}
