@@ -60,7 +60,7 @@ type KVServer struct {
 type RequestInfo struct {
 	Status string
 	Rindex int
-	Type string
+	Type   string
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -112,9 +112,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 					}
 				} else if kv.record[args.Index].Status == ErrorOccurred {
 					DEBUG(dCommit, "S%v get %v is failed", kv.me, args.Index)
-					delete(kv.record, args.Index)
+					// delete(kv.record, args.Index)
 					reply.Err = ErrorOccurred
 				}
+			} else if v.Status == ErrorOccurred {
+				break
 			}
 			kv.mu.Unlock()
 			return
@@ -155,7 +157,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 	if kv.record[args.Index].Status == ErrorOccurred {
 		DEBUG(dCommit, "S%v get %v is failed", kv.me, args.Index)
-		delete(kv.record, args.Index)
+		// delete(kv.record, args.Index)
 		reply.Err = ErrorOccurred
 	} else if kv.record[args.Index].Status == Completed {
 		if _, ok := kv.storage[args.Key]; ok {
@@ -207,9 +209,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 					reply.Err = OK
 				} else if kv.record[args.Index].Status == ErrorOccurred {
 					DEBUG(dCommit, "S%v p/a %v is failed", kv.me, args.Index)
-					delete(kv.record, args.Index)
+					// delete(kv.record, args.Index)
 					reply.Err = ErrorOccurred
 				}
+			} else if v.Status == ErrorOccurred {
+				break
 			}
 			kv.mu.Unlock()
 			return
@@ -250,7 +254,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 	if kv.record[args.Index].Status == ErrorOccurred {
 		DEBUG(dInfo, "S%v p/a %v is failed", kv.me, i)
-		delete(kv.record, args.Index)
+		// delete(kv.record, args.Index)
 		reply.Err = ErrorOccurred
 	} else if kv.record[args.Index].Status == Completed {
 		DEBUG(dInfo, "S%v p/a %v is ok", kv.me, i)
@@ -333,12 +337,12 @@ func (kv *KVServer) Apply() {
 			} else if op.Type == "Append" {
 				kv.storage[op.Key] += op.Value
 			} else if op.Type == "LeaderTimer" {
-				if kv.Index == entry.CommandIndex || kv.StartTimer == -1{
+				if kv.Index == entry.CommandIndex || kv.StartTimer == -1 {
 					kv.StartTimer = op.Index
 					DEBUG(dClient, "S%v timer: %v record:%v", kv.me, kv.StartTimer, kv.record)
 				}
 			}
-			DEBUG(dLeader, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, op.Index, kv.record[op.Index].Status)
+			// DEBUG(dLeader, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, op.Index, kv.record[op.Index].Status)
 			// kv.record[op.Index] = RequestInfo{
 			// 	Status: Completed,
 			// 	Rindex: entry.CommandIndex,

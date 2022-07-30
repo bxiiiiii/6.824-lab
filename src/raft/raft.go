@@ -20,6 +20,8 @@ package raft
 import (
 	"bytes"
 	// "fmt"
+	"math/big"
+	crand "crypto/rand"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -177,12 +179,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.CurrentTerm = currentTerm
 		rf.VotedFor = votedFor
 		for _, en := range log {
-			entry := Entries{
-				Command: en.Command,
-				Index: en.Index,
-				Term: en.Term,
-			}
-			rf.Log[en.Index] = entry
+			rf.Log[en.Index] = en
 		}
 		rf.LastLogIndex = lastLogIndex
 		rf.mu.Unlock()
@@ -471,46 +468,52 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.LastLogIndex = rf.LastIncludedIndex
 	}
 	rf.persist()
-	rf.mu.Unlock()
+	// rf.mu.Unlock()
 
-	go func() {
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
-		if rf.lastApplied < args.LastIncludedIndex {
-			applyMsg := ApplyMsg{
-				SnapshotValid: true,
-				Snapshot:      rf.SnapshotData,
-				SnapshotIndex: rf.LastIncludedIndex,
-				SnapshotTerm:  rf.LastIncludedTerm,
-			}
-			rf.applyCh <- applyMsg
-			DEBUG(dCommit, "S%v apply: %v", rf.me, applyMsg.SnapshotIndex)
-			//TODO: committed ?
-			rf.lastApplied = args.LastIncludedIndex
-			if rf.commitIndex < args.LastIncludedIndex {
-				rf.commitIndex = args.LastIncludedIndex
-			}
-			return
+	// go func() {
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
+	if rf.lastApplied < args.LastIncludedIndex {
+		applyMsg := ApplyMsg{
+			SnapshotValid: true,
+			Snapshot:      rf.SnapshotData,
+			SnapshotIndex: rf.LastIncludedIndex,
+			SnapshotTerm:  rf.LastIncludedTerm,
 		}
-	}()
+		rf.applyCh <- applyMsg
+		rf.lastApplied = applyMsg.SnapshotIndex
+		rf.commitIndex = rf.lastApplied
+		DEBUG(dCommit, "S%v apply: %v %v ", rf.me, rf.lastApplied, rf.commitIndex)
+		rf.cond.Signal()
+		// if rf.commitIndex < args.LastIncludedIndex {
+		// 	rf.commitIndex = args.LastIncludedIndex
+		// }
+	}
+	// }()
+	rf.mu.Unlock()
 
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply) {
 	rf.cond.Signal()
+	rf.mu.Lock()
+	// ice := false
 	if args.SnapShot != 0 {
-		for {
-			rf.mu.Lock()
-			if args.SnapShot > rf.lastApplied {
-				rf.mu.Unlock()
-				time.Sleep(30 * time.Millisecond)
-			} else {
-				break
-			}
+		// for {
+		// 	rf.mu.Lock()
+		// 	if args.SnapShot > rf.lastApplied {
+		// 		rf.mu.Unlock()
+		// 		time.Sleep(30 * time.Millisecond)
+		// 	} else {
+		// 		break
+		// 	}
+		// }
+		// ice = true
+		for args.SnapShot > rf.lastApplied {
+			rf.cond.Wait()
 		}
-	} else {
-		rf.mu.Lock()
 	}
+	DEBUG(dLeader, "S%v %v %v %v %v ", rf.me, rf.commitIndex, rf.lastApplied, rf.LastLogIndex, rf.LastIncludedIndex)
 	DEBUG(dLog, "S%v get hbt or ae from %v", rf.me, args.LeaderId)
 	// DEBUG(dError, "S%v leader: %v log: %v at T:%v", rf.me, rf.leader, rf.Log, rf.CurrentTerm)
 	if args.Term > rf.CurrentTerm {
@@ -574,12 +577,7 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 				for i, entry := range args.AppendEntries {
 					if rf.LastLogIndex+1 <= entry.Index {
 						for _, en := range args.AppendEntries[i:] {
-							entry := Entries{
-								Command: en.Command,
-								Index: en.Index,
-								Term: en.Term,
-							}
-							rf.Log[en.Index] = entry
+							rf.Log[en.Index] = en
 						}
 						rf.LastLogIndex = args.AppendEntries[len(args.AppendEntries)-1].Index
 						break
@@ -591,24 +589,18 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 							}
 						}
 						for _, en := range args.AppendEntries[i:] {
-							entry := Entries{
-								Command: en.Command,
-								Index: en.Index,
-								Term: en.Term,
-							}
-							rf.Log[en.Index] = entry
+							rf.Log[en.Index] = en
 						}
 						rf.LastLogIndex = args.AppendEntries[len(args.AppendEntries)-1].Index
 						break
 					}
 				}
-				rf.persist()
 				reply.Success = true
 				reply.Term = rf.CurrentTerm
 				// DEBUG(dTrace, "S%v copy succ in ae log : %v ll :%v", rf.me, rf.Log, rf.LastLogIndex)
 			}
 		}
-
+		rf.persist()
 		rf.becomeFowllower(args.LeaderId, args.Term)
 		if !reply.Success {
 			rf.mu.Unlock()
@@ -631,7 +623,7 @@ func (rf *Raft) AppendEntries(args *AppendEntiresArgs, reply *AppendEntiresReply
 				rf.commitIndex = rf.Log[rf.LastLogIndex].Index
 			}
 		}
-		// DEBUG(dCommit, "S%v update commitindex to %v", rf.me, rf.commitIndex)
+		DEBUG(dCommit, "S%v update commitindex to %v", rf.me, rf.commitIndex)
 
 	}
 	rf.cond.Signal()
@@ -802,7 +794,10 @@ func (rf *Raft) becomeLeader() {
 	}
 }
 func (rf *Raft) becomeCandidate() {
-	rand.Seed(time.Now().Unix())
+	max := big.NewInt(int64(1) << 62)
+	bigx, _ := crand.Int(crand.Reader, max)
+	x := bigx.Int64()
+	rand.Seed(x)
 	rf.CurrentTerm++
 	rf.VotedFor = rf.me
 	rf.state = Scandidate
@@ -816,7 +811,10 @@ func (rf *Raft) becomeCandidate() {
 }
 
 func (rf *Raft) becomeFowllower(leaderId int, Term int) {
-	rand.Seed(time.Now().Unix())
+	max := big.NewInt(int64(1) << 62)
+	bigx, _ := crand.Int(crand.Reader, max)
+	x := bigx.Int64()
+	rand.Seed(x)
 	if Term > rf.CurrentTerm {
 		rf.VotedFor = -1
 		rf.CurrentTerm = Term
@@ -906,37 +904,34 @@ func (rf *Raft) applyGoro(applyCh chan ApplyMsg) {
 		for rf.lastApplied == rf.commitIndex {
 			rf.cond.Wait()
 		}
-		lastApplied := rf.lastApplied
-		commitIndex := rf.commitIndex
-		log := make(map[int]Entries)
-		for _, en := range rf.Log {
-			entry := Entries{
-				Command: en.Command,
-				Index: en.Index,
-				Term: en.Term,
-			}
-			log[en.Index] = entry
-		}
-		rf.mu.Unlock()
-		for lastApplied < commitIndex {
-			rf.mu.Lock()
-			lastApplied = rf.lastApplied
-			rf.mu.Unlock()
-			if _, ok := log[lastApplied+1]; ok {
+		// lastApplied := rf.lastApplied
+		// commitIndex := rf.commitIndex
+		// log := make(map[int]Entries)
+		// for _, en := range rf.Log {
+		// 	entry := Entries{
+		// 		Command: en.Command,
+		// 		Index: en.Index,
+		// 		Term: en.Term,
+		// 	}
+		// 	log[en.Index] = entry
+		// }
+		// rf.mu.Unlock()
+		for rf.lastApplied < rf.commitIndex {
+			// rf.mu.Lock()
+			if _, ok := rf.Log[rf.lastApplied+1]; ok {
 				applyMsg := ApplyMsg{
 					CommandValid: true,
-					Command:      log[lastApplied+1].Command,
-					CommandIndex: lastApplied + 1,
+					Command:      rf.Log[rf.lastApplied+1].Command,
+					CommandIndex: rf.lastApplied + 1,
 				}
-				applyCh <- applyMsg
-				lastApplied++
-				DEBUG(dCommit, "S%v apply: %v", rf.me, applyMsg)
-				rf.mu.Lock()
-				rf.lastApplied = lastApplied
+				rf.lastApplied++
 				rf.mu.Unlock()
+				applyCh <- applyMsg
+				rf.mu.Lock()
+				DEBUG(dCommit, "S%v apply: %v", rf.me, applyMsg)
 			}
 		}
-		// rf.mu.Unlock()
+		rf.mu.Unlock()
 	}
 }
 
@@ -963,12 +958,7 @@ func (rf *Raft) SendAppendEntriesTo(i int, tmterm int) {
 			snapflag = rf.LastIncludedIndex
 		}
 		for idx := rf.nextIndex[i]; idx <= rf.LastLogIndex; idx++ {
-			entry := Entries{
-				Command: rf.Log[idx].Command,
-				Index: rf.Log[idx].Index,
-				Term: rf.Log[idx].Term,
-			}
-			args.AppendEntries = append(args.AppendEntries, entry)
+			args.AppendEntries = append(args.AppendEntries, rf.Log[idx])
 		}
 	}
 	if rf.nextIndex[i] == 0 {
