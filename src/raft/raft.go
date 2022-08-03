@@ -61,7 +61,7 @@ type ApplyMsg struct {
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
-	persister *Persister          // Object to hold this peer's persisted state
+	Persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
@@ -139,11 +139,11 @@ func (rf *Raft) persist() {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	tem := make(map[int]Entries)
-	for k, v := range rf.Log{
+	for k, v := range rf.Log {
 		entry := Entries{
 			Command: v.Command,
-			Index: v.Index,
-			Term: v.Term,
+			Index:   v.Index,
+			Term:    v.Term,
 		}
 		tem[k] = entry
 	}
@@ -154,7 +154,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.LastLogIndex)
 	data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
-	rf.persister.SaveStateAndSnapshot(data, rf.SnapshotData)
+	rf.Persister.SaveStateAndSnapshot(data, rf.SnapshotData)
 	// rf.mu.Unlock()
 }
 
@@ -743,7 +743,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
-	rf.persister = persister
+	rf.Persister = persister
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).

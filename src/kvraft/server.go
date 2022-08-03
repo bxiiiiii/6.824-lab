@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"time"
 
@@ -55,6 +56,10 @@ type KVServer struct {
 	StartTime  time.Time
 	StartTimer int64
 	Index      int
+
+	ApplyIndex    int
+	SnapshotTerm  int
+	SnapshotIndex int
 }
 
 type RequestInfo struct {
@@ -282,6 +287,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	LOGinit()
 	go kv.Apply()
 	go kv.Timer()
+	go kv.Snap()
 	return kv
 }
 
@@ -300,13 +306,13 @@ func (kv *KVServer) Apply() {
 					DEBUG(dClient, "S%v timer: %v record:%v", kv.me, kv.StartTimer, kv.record)
 				}
 			}
+			kv.ApplyIndex = entry.CommandIndex
 			// DEBUG(dLeader, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, op.Index, kv.record[op.Index].Status)
 			var req RequestInfo
 			req.Rindex = entry.CommandIndex
 			req.Status = Completed
 			req.Type = op.Type
 			kv.record[op.Index] = req
-			// if op.Type != "Timer" {
 			for k, v := range kv.record {
 				if v.Rindex == entry.CommandIndex {
 					DEBUG(dError, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, k, v.Status)
@@ -319,11 +325,32 @@ func (kv *KVServer) Apply() {
 					}
 				}
 			}
-			// }
+			kv.mu.Unlock()
 			// DEBUG(dLog2, "S%v %v", kv.me, kv.record)
 			kv.cond.Broadcast()
+		} else if entry.SnapshotValid {
+			kv.mu.Lock()
+			kv.SnapshotIndex = entry.SnapshotIndex
+			kv.SnapshotTerm = entry.SnapshotTerm
+			r := bytes.NewBuffer(entry.Snapshot)
+			d := labgob.NewDecoder(r)
+			var index int
+			storage := make(map[string]string)
+			record := make(map[int64]RequestInfo)
+			if d.Decode(&index) != nil || d.Decode(&storage) != nil || d.Decode(&record) != nil {
+				DEBUG(dError, "S%v [kvraft]readSnapshotPersist failed", kv.me)
+			} else {
+				for k, v := range storage {
+					kv.storage[k] = v
+				}
+				for k, v := range record {
+					kv.record[k] = v
+				}
+				kv.ApplyIndex = entry.SnapshotIndex
+			}
 			kv.mu.Unlock()
 		}
+		
 	}
 }
 
@@ -367,5 +394,30 @@ func (kv *KVServer) Timer() {
 		if isleader {
 			DEBUG(dTimer, "S%v add a Timer i:%v", kv.me, i)
 		}
+	}
+}
+
+func (kv *KVServer) Snap() {
+	if kv.maxraftstate == -1 {
+		return
+	}
+	for {
+		if kv.killed() {
+			return
+		}
+		kv.mu.Lock()
+		// DEBUG(dWarn, "S%v check size %v %v", kv.me, kv.maxraftstate, kv.rf.Persister.RaftStateSize())
+		if kv.rf.Persister.RaftStateSize() >= kv.maxraftstate {
+			DEBUG(dWarn, "S%v snap", kv.me)
+			w := new(bytes.Buffer)
+			e := labgob.NewEncoder(w)
+			e.Encode(kv.ApplyIndex)
+			e.Encode(kv.storage)
+			e.Encode(kv.record)
+			data := w.Bytes()
+			go kv.rf.Snapshot(kv.ApplyIndex, data)
+		}
+		kv.mu.Unlock()
+		time.Sleep(time.Microsecond * 50)
 	}
 }
