@@ -65,12 +65,6 @@ type RequestInfo struct {
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	// timer := 0
-	// _, Rstatus := kv.rf.GetState()
-	// if !Rstatus {
-	// 	reply.Err = ErrWrongLeader
-	// 	return
-	// }
 	kv.mu.Lock()
 	if _, ok := kv.record[kv.StartTimer]; !ok {
 		reply.Err = ErrorTimeDeny
@@ -93,12 +87,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 			} else if v.Status == InProgress {
 				DEBUG(dDrop, "S%v get %v is waiting", kv.me, args.Index)
 				for kv.record[args.Index].Status == InProgress {
-					// timer++
-					// if timer >= 3 {
-					// 	DEBUG(dCommit, "S%v %v is failed", kv.me, args.Index)
-					// 	reply.Err = ErrWrongLeader
-					// }
-
 					kv.cond.Wait()
 				}
 				if kv.record[args.Index].Status == Completed {
@@ -139,20 +127,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	var entry RequestInfo
 	entry.Rindex = i
 	entry.Status = InProgress
-	// kv.record[args.Index] = RequestInfo{
-	// 	Status: InProgress,
-	// 	Rindex: i,
-	// }
 	kv.record[args.Index] = entry
 
 	for kv.record[args.Index].Status == InProgress {
 		// DEBUG(dPersist, "S%v %v", kv.me, kv.record)
 		// DEBUG(dInfo, "S%v %v get is working status:%v", kv.me, args.Index, kv.record[args.Index].Status)
-		// timer++
-		// if timer >= 3 {
-		// 	DEBUG(dCommit, "S%v %v is failed", kv.me, args.Index)
-		// 	reply.Err = ErrWrongLeader
-		// }
 		kv.cond.Wait()
 	}
 	if kv.record[args.Index].Status == ErrorOccurred {
@@ -174,12 +153,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	// timer := 0
-	// _, Rstatus := kv.rf.GetState()
-	// if !Rstatus {
-	// 	reply.Err = ErrWrongLeader
-	// 	return
-	// }
 	kv.mu.Lock()
 	if _, ok := kv.record[kv.StartTimer]; !ok {
 		DEBUG(dPersist, "S%v p/a deny %v", kv.me, args.Index)
@@ -197,11 +170,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			} else if v.Status == InProgress {
 				DEBUG(dDrop, "S%v p/a %v is waiting", kv.me, args.Index)
 				for kv.record[args.Index].Status == InProgress {
-					// timer++
-					// if timer >= 3 {
-					// 	DEBUG(dCommit, "S%v p/a %v is failed", kv.me, args.Index)
-					// 	reply.Err = ErrWrongLeader
-					// }
 					kv.cond.Wait()
 				}
 				if kv.record[args.Index].Status == Completed {
@@ -237,19 +205,9 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	req.Status = InProgress
 	req.Rindex = i
 	kv.record[args.Index] = req
-	// kv.record[args.Index] = RequestInfo{
-	// 	Status: InProgress,
-	// 	Rindex: i,
-	// }
-	// for _, ok := kv.record[args.Index]; ok && !kv.record[args.Index].Status; {
 	for kv.record[args.Index].Status == InProgress {
 		// DEBUG(dPersist, "S%v %v", kv.me, kv.record)
 		// DEBUG(dInfo, "S%v %v p/a is working status:%v", kv.me, args.Index, kv.record[args.Index].Status)
-		// timer++
-		// if timer >= 3 {
-		// 	DEBUG(dCommit, "S%v %v is failed", kv.me, args.Index)
-		// 	reply.Err = ErrWrongLeader
-		// }
 		kv.cond.Wait()
 	}
 	if kv.record[args.Index].Status == ErrorOccurred {
@@ -343,11 +301,6 @@ func (kv *KVServer) Apply() {
 				}
 			}
 			// DEBUG(dLeader, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, op.Index, kv.record[op.Index].Status)
-			// kv.record[op.Index] = RequestInfo{
-			// 	Status: Completed,
-			// 	Rindex: entry.CommandIndex,
-			// 	Type: op.Type,
-			// }
 			var req RequestInfo
 			req.Rindex = entry.CommandIndex
 			req.Status = Completed
@@ -358,11 +311,6 @@ func (kv *KVServer) Apply() {
 				if v.Rindex == entry.CommandIndex {
 					DEBUG(dError, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, k, v.Status)
 					if k != op.Index {
-						// entry := RequestInfo{
-						// 	Status: ErrorOccurred,
-						// 	Rindex: v.Rindex,
-						// 	Type: v.Type,
-						// }
 						var req1 RequestInfo
 						req1.Rindex = v.Rindex
 						req1.Status = ErrorOccurred
