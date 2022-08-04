@@ -65,7 +65,7 @@ type KVServer struct {
 type RequestInfo struct {
 	Status string
 	Rindex int
-	Type   string
+	// Type   string
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -295,6 +295,9 @@ func (kv *KVServer) Apply() {
 	for entry := range kv.applyCh {
 		if entry.CommandValid {
 			kv.mu.Lock()
+			if entry.Command == nil {
+				continue
+			}
 			op := (entry.Command).(Op)
 			if op.Type == "Put" {
 				kv.storage[op.Key] = op.Value
@@ -311,7 +314,7 @@ func (kv *KVServer) Apply() {
 			var req RequestInfo
 			req.Rindex = entry.CommandIndex
 			req.Status = Completed
-			req.Type = op.Type
+			// req.Type = op.Type
 			kv.record[op.Index] = req
 			for k, v := range kv.record {
 				if v.Rindex == entry.CommandIndex {
@@ -320,7 +323,7 @@ func (kv *KVServer) Apply() {
 						var req1 RequestInfo
 						req1.Rindex = v.Rindex
 						req1.Status = ErrorOccurred
-						req1.Type = v.Type
+						// req1.Type = v.Type
 						kv.record[k] = req1
 					}
 				}
@@ -343,14 +346,24 @@ func (kv *KVServer) Apply() {
 				for k, v := range storage {
 					kv.storage[k] = v
 				}
+				for k, v := range kv.record {
+					if v.Rindex <= index && v.Status == InProgress {
+						var req1 RequestInfo
+						req1.Rindex = v.Rindex
+						req1.Status = ErrorOccurred
+						// req1.Type = v.Type
+						kv.record[k] = req1
+					}
+				}
 				for k, v := range record {
 					kv.record[k] = v
 				}
 				kv.ApplyIndex = entry.SnapshotIndex
 			}
 			kv.mu.Unlock()
+			kv.cond.Broadcast()
 		}
-		
+
 	}
 }
 
@@ -406,18 +419,31 @@ func (kv *KVServer) Snap() {
 			return
 		}
 		kv.mu.Lock()
+		// if _, ok := kv.record[kv.StartTimer]; !ok {
+		// 	kv.mu.Unlock()
+		// 	continue
+		// }
 		// DEBUG(dWarn, "S%v check size %v %v", kv.me, kv.maxraftstate, kv.rf.Persister.RaftStateSize())
 		if kv.rf.Persister.RaftStateSize() >= kv.maxraftstate {
-			DEBUG(dWarn, "S%v snap", kv.me)
+			DEBUG(dWarn, "S%v snap %v", kv.me, kv.ApplyIndex)
 			w := new(bytes.Buffer)
 			e := labgob.NewEncoder(w)
 			e.Encode(kv.ApplyIndex)
 			e.Encode(kv.storage)
-			e.Encode(kv.record)
+			record := make(map[int64]RequestInfo)
+			for k, v := range kv.record {
+				if v.Rindex > kv.ApplyIndex-20 {
+					record[k] = v
+				}
+			}
+			e.Encode(record)
 			data := w.Bytes()
-			go kv.rf.Snapshot(kv.ApplyIndex, data)
+			i := kv.ApplyIndex
+			kv.mu.Unlock()
+			kv.rf.Snapshot(i, data)
+		} else {
+			kv.mu.Unlock()
 		}
-		kv.mu.Unlock()
 		time.Sleep(time.Microsecond * 50)
 	}
 }

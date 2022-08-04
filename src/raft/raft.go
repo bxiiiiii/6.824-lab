@@ -221,6 +221,7 @@ func (rf *Raft) readSnapshot(data []byte) {
 			DEBUG(dCommit, "S%v apply: %v", rf.me, applyMsg.SnapshotIndex)
 			//TODO: committed ?
 			rf.lastApplied = rf.LastIncludedIndex
+			rf.commitIndex = rf.lastApplied
 		}
 	}()
 }
@@ -252,6 +253,13 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 			delete(rf.Log, entry.Index)
 		}
 	}
+	if rf.lastApplied < rf.LastIncludedIndex {
+		rf.lastApplied = rf.LastIncludedIndex
+	}
+	if rf.commitIndex < rf.lastApplied {
+		rf.commitIndex = rf.lastApplied
+	}
+	DEBUG(dPersist, "S%v [after snap]la:%v log:%v", rf.me, rf.lastApplied, rf.Log)
 	rf.persist()
 	rf.mu.Unlock()
 }
