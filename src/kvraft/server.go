@@ -298,6 +298,9 @@ func (kv *KVServer) Apply() {
 			if entry.Command == nil {
 				continue
 			}
+			if entry.CommandIndex <= kv.ApplyIndex {
+				continue
+			}
 			op := (entry.Command).(Op)
 			if op.Type == "Put" {
 				kv.storage[op.Key] = op.Value
@@ -359,6 +362,7 @@ func (kv *KVServer) Apply() {
 					kv.record[k] = v
 				}
 				kv.ApplyIndex = entry.SnapshotIndex
+				kv.SnapshotIndex = entry.SnapshotIndex
 			}
 			kv.mu.Unlock()
 			kv.cond.Broadcast()
@@ -424,7 +428,7 @@ func (kv *KVServer) Snap() {
 		// 	continue
 		// }
 		// DEBUG(dWarn, "S%v check size %v %v", kv.me, kv.maxraftstate, kv.rf.Persister.RaftStateSize())
-		if kv.rf.Persister.RaftStateSize() >= kv.maxraftstate {
+		if  kv.ApplyIndex > kv.SnapshotIndex && kv.rf.Persister.RaftStateSize() >= kv.maxraftstate {
 			DEBUG(dWarn, "S%v snap %v", kv.me, kv.ApplyIndex)
 			w := new(bytes.Buffer)
 			e := labgob.NewEncoder(w)
@@ -432,7 +436,7 @@ func (kv *KVServer) Snap() {
 			e.Encode(kv.storage)
 			record := make(map[int64]RequestInfo)
 			for k, v := range kv.record {
-				if v.Rindex > kv.ApplyIndex-20 {
+				if v.Rindex > kv.ApplyIndex-100 {
 					record[k] = v
 				}
 			}
