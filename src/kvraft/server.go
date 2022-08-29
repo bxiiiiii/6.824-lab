@@ -283,7 +283,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.record = make(map[int64]RequestInfo)
 	kv.StartTime = time.Now()
 	kv.StartTimer = -1
-	DEBUG(dTrace, "S%v Started timer: %v record:%v", kv.me, kv.StartTimer, kv.record)
+	// DEBUG(dTrace, "S%v Started timer: %v record:%v", kv.me, kv.StartTimer, kv.record)
 	LOGinit()
 	go kv.Apply()
 	go kv.Timer()
@@ -295,6 +295,7 @@ func (kv *KVServer) Apply() {
 	for entry := range kv.applyCh {
 		if entry.CommandValid {
 			kv.mu.Lock()
+			DEBUG(dTrace, "S%v recieve apply: %v", kv.me, entry)
 			if entry.Command == nil {
 				continue
 			}
@@ -309,28 +310,29 @@ func (kv *KVServer) Apply() {
 			} else if op.Type == "LeaderTimer" {
 				if kv.Index == entry.CommandIndex || kv.StartTimer == -1 {
 					kv.StartTimer = op.Index
-					DEBUG(dClient, "S%v timer: %v record:%v", kv.me, kv.StartTimer, kv.record)
+					// DEBUG(dClient, "S%v timer: %v record:%v", kv.me, kv.StartTimer, kv.record)
 				}
 			}
+			for preIndex, preStatus := range kv.record {
+				if preStatus.Rindex == entry.CommandIndex {
+					if preIndex != op.Index {
+						DEBUG(dError, "S%v apply [%v][%v]%v", kv.me, preIndex, op.Index)
+						var req1 RequestInfo
+						req1.Rindex = preStatus.Rindex
+						req1.Status = ErrorOccurred
+						// req1.Type = v.Type
+						kv.record[preIndex] = req1
+					}
+				}
+			}
+
 			kv.ApplyIndex = entry.CommandIndex
-			// DEBUG(dLeader, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, op.Index, kv.record[op.Index].Status)
 			var req RequestInfo
 			req.Rindex = entry.CommandIndex
 			req.Status = Completed
 			// req.Type = op.Type
 			kv.record[op.Index] = req
-			for k, v := range kv.record {
-				if v.Rindex == entry.CommandIndex {
-					DEBUG(dError, "S%v apply [%v][%v]%v", kv.me, entry.CommandIndex, k, v.Status)
-					if k != op.Index {
-						var req1 RequestInfo
-						req1.Rindex = v.Rindex
-						req1.Status = ErrorOccurred
-						// req1.Type = v.Type
-						kv.record[k] = req1
-					}
-				}
-			}
+			DEBUG(dLeader, "S%v [after apply] %v", kv.me, kv.record[op.Index])
 			kv.mu.Unlock()
 			// DEBUG(dLog2, "S%v %v", kv.me, kv.record)
 			kv.cond.Broadcast()
@@ -395,11 +397,10 @@ func (kv *KVServer) Timer() {
 			kv.mu.Unlock()
 			break
 		} else {
-			time.Sleep(time.Second)
+			time.Sleep(time.Millisecond * 500)
 		}
 	}
 	for {
-		time.Sleep(2 * time.Second)
 		if kv.killed() {
 			return
 		}
@@ -411,6 +412,7 @@ func (kv *KVServer) Timer() {
 		if isleader {
 			DEBUG(dTimer, "S%v add a Timer i:%v", kv.me, i)
 		}
+		time.Sleep(time.Millisecond * 500)
 	}
 }
 
@@ -442,12 +444,13 @@ func (kv *KVServer) Snap() {
 			}
 			e.Encode(record)
 			data := w.Bytes()
+			kv.SnapshotIndex = kv.ApplyIndex
 			i := kv.ApplyIndex
-			kv.mu.Unlock()
 			kv.rf.Snapshot(i, data)
+			kv.mu.Unlock()
 		} else {
 			kv.mu.Unlock()
 		}
-		time.Sleep(time.Microsecond * 50)
+		// time.Sleep(time.Microsecond * 50)
 	}
 }
