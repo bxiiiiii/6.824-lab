@@ -61,7 +61,7 @@ func (ck *Clerk) Get(key string) string {
 }
 
 func (ck *Clerk) CallGet(i int, args *GetArgs, reply *GetReply, timer int) (bool, string) {
-	if timer > 3 {
+	if timer > 5 {
 		return false, ""
 	}
 	ok := ck.servers[i].Call("KVServer.Get", args, reply)
@@ -78,7 +78,7 @@ func (ck *Clerk) CallGet(i int, args *GetArgs, reply *GetReply, timer int) (bool
 		} else if reply.Err == ErrorOccurred {
 			return false, ""
 		} else if reply.Err == ErrorTimeDeny {
-			time.Sleep(time.Millisecond * 250)
+			// time.Sleep(time.Millisecond * 500)
 			newreply := GetReply{}
 			return ck.CallGet(i, args, &newreply, timer+1)
 		}
@@ -120,7 +120,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 }
 
 func (ck *Clerk) CallPutAppend(i int, args *PutAppendArgs, reply *PutAppendReply, timer int) bool {
-	if timer > 3 {
+	if timer > 5 {
 		return false
 	}
 	ok := ck.servers[i].Call("KVServer.PutAppend", args, reply)
@@ -137,7 +137,7 @@ func (ck *Clerk) CallPutAppend(i int, args *PutAppendArgs, reply *PutAppendReply
 		} else if reply.Err == ErrorOccurred {
 			return false
 		} else if reply.Err == ErrorTimeDeny {
-			time.Sleep(time.Millisecond * 250)
+			// time.Sleep(time.Millisecond * 500)
 			newreply := PutAppendReply{}
 			return ck.CallPutAppend(i, args, &newreply, timer+1)
 		}

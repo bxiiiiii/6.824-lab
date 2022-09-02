@@ -19,8 +19,8 @@ package raft
 
 import (
 	"bytes"
-	"fmt"
 	crand "crypto/rand"
+	"fmt"
 	"math/big"
 	"math/rand"
 	"sync"
@@ -336,7 +336,7 @@ type InstallSnapshotReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	//2A
-	// DEBUG(dVote, "S%v C%v asking for vote pi:%v pt:%v", rf.me, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
+	DEBUG(dVote, "S%v C%v asking for vote pi:%v pt:%v", rf.me, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
 	rf.mu.Lock()
 
 	if rf.CurrentTerm < args.Term {
@@ -392,7 +392,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	reply.CommitIndex = rf.commitIndex
 	reply.CommitTerm = rf.Log[rf.commitIndex].Term
-	// DEBUG(dVote, "S%v T%v Granting Vote to S%v", rf.me, rf.CurrentTerm, rf.VotedFor)
+	DEBUG(dVote, "S%v T%v Granting Vote to S%v", rf.me, rf.CurrentTerm, rf.VotedFor)
 	rf.persist()
 	rf.mu.Unlock()
 }
@@ -508,9 +508,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.mu.Unlock()
 		rf.applyCh <- applyMsg
 		rf.cond.Signal()
-		// if rf.commitIndex < args.LastIncludedIndex {
-		// 	rf.commitIndex = args.LastIncludedIndex
-		// }
 	} else {
 		rf.mu.Unlock()
 	}
@@ -701,7 +698,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		// rf.StartSendAppendEntries(rf.CurrentTerm)
 		// rf.timer = 0
 		DEBUG(dLeader, "S%v start get %v", rf.me, en)
-		if rf.timer < 50 {
+		if rf.timer > 50 {
 			go rf.StartSendAppendEntries(rf.CurrentTerm)
 			rf.timer = 0
 		}
@@ -755,10 +752,7 @@ func (rf *Raft) ticker() {
 				}()
 			} else {
 				rf.becomeCandidate()
-				rf.persist()
-				go func() {
-					rf.sendvote()
-				}()
+				go rf.sendvote()
 			}
 		}
 		rf.timer++
@@ -875,6 +869,15 @@ func (rf *Raft) sendvote() {
 	cond.Add(len(rf.peers) - 1)
 	rf.mu.Lock()
 	tmTerm := rf.CurrentTerm
+	log := make(map[int]Entries)
+	for k, v := range rf.Log {
+		log[k] = Entries{
+			Command: v.Command,
+			Index:   v.Index,
+			Term:    v.Term,
+		}
+	}
+	maxlog := rf.LastLogIndex
 	rf.mu.Unlock()
 	for i := range rf.peers {
 		if i == rf.me {
@@ -885,22 +888,15 @@ func (rf *Raft) sendvote() {
 			reply := RequestVoteReply{}
 			args.CandidateId = rf.me
 			args.Term = tmTerm
-			rf.mu.Lock()
-			if rf.LastLogIndex == 0 {
-				args.LastLogIndex = 0
-			} else {
-				args.LastLogIndex = rf.LastLogIndex
-
-			}
-			args.LastLogTerm = rf.Log[args.LastLogIndex].Term
-			rf.mu.Unlock()
+			args.LastLogIndex = maxlog
+			args.LastLogTerm = log[maxlog].Term
 			rf.sendRequestVote(i, &args, &reply)
 			// ok := rf.sendRequestVote(i, &args, &reply)
 			// if !ok {
 			// 	DEBUG(dError, "S%v -> S%v voterpc failed at T: %v", rf.me, i, rf.CurrentTerm)
 			// }
 			if reply.VoteGranted {
-				// DEBUG(dVote, "S%v <- S%v Got vote", rf.me, i)
+				DEBUG(dVote, "S%v <- S%v Got vote", rf.me, i)
 				lock.Lock()
 				truevotes++
 				num := len(rf.peers)
@@ -1059,14 +1055,16 @@ func (rf *Raft) SendAppendEntriesTo(i int, tmterm int) {
 				rf.becomeFowllower(-1, reply.Term)
 				rf.persist()
 			} else if rf.Log[reply.CommitIndex].Term != reply.CommitTerm {
-				for _, en := range rf.Log {
-					if en.Index > rf.commitIndex {
-						delete(rf.Log, en.Index)
+				if _, ok := rf.Log[reply.CommitIndex]; ok {
+					for _, en := range rf.Log {
+						if en.Index > rf.commitIndex {
+							delete(rf.Log, en.Index)
+						}
 					}
+					rf.LastLogIndex = rf.commitIndex
+					rf.becomeFowllower(-1, reply.Term)
+					rf.persist()
 				}
-				rf.LastLogIndex = rf.commitIndex
-				rf.becomeFowllower(-1, reply.Term)
-				rf.persist()
 			}
 			// DEBUG(dLog2, "S%v log: %v", rf.me, rf.Log)
 			if reply.Term > rf.CurrentTerm {

@@ -412,7 +412,7 @@ func (kv *KVServer) Timer() {
 		if isleader {
 			DEBUG(dTimer, "S%v add a Timer i:%v", kv.me, i)
 		}
-		time.Sleep(time.Millisecond * 500)
+		time.Sleep(time.Second)
 	}
 }
 
@@ -451,6 +451,6 @@ func (kv *KVServer) Snap() {
 		} else {
 			kv.mu.Unlock()
 		}
-		// time.Sleep(time.Microsecond * 50)
+		time.Sleep(time.Microsecond * 50)
 	}
 }
