@@ -32,12 +32,14 @@ func (ck *Clerk) Query(num int) Config {
 	args := &QueryArgs{}
 	// Your code here.
 	args.Num = num
+	args.Index = nrand()
+
 	for {
 		// try each known server.
-		for _, srv := range ck.servers {
+		for i, _ := range ck.servers {
 			var reply QueryReply
-			ok := srv.Call("ShardCtrler.Query", args, &reply)
-			if ok && reply.WrongLeader == false {
+			ok := ck.CallQuery(i, args, &reply, 0)
+			if ok {
 				return reply.Config
 			}
 		}
@@ -45,17 +47,41 @@ func (ck *Clerk) Query(num int) Config {
 	}
 }
 
+func (ck *Clerk) CallQuery(i int, args *QueryArgs, reply *QueryReply, timer int) bool {
+	if timer > 5 {
+		return false
+	}
+	ok := ck.servers[i].Call("ShardCtrler.Query", args, reply)
+	if !ok {
+		newreply := QueryReply{}
+		return ck.CallQuery(i, args, &newreply, timer+1)
+	} else {
+		if reply.Err == OK {
+			return true
+		} else if reply.Err == ErrWrongLeader {
+			return false
+		} else if reply.Err == ErrorOccurred {
+			return false
+		} else if reply.Err == ErrorTimeDeny {
+			newreply := QueryReply{}
+			return ck.CallQuery(i, args, &newreply, timer+1)
+		}
+	}
+	return false
+}
+
 func (ck *Clerk) Join(servers map[int][]string) {
 	args := &JoinArgs{}
 	// Your code here.
 	args.Servers = servers
+	args.Index = nrand()
 
 	for {
 		// try each known server.
-		for _, srv := range ck.servers {
+		for i, _ := range ck.servers {
 			var reply JoinReply
-			ok := srv.Call("ShardCtrler.Join", args, &reply)
-			if ok && reply.WrongLeader == false {
+			ok := ck.CallJoin(i, args, &reply, 0)
+			if ok {
 				return
 			}
 		}
@@ -63,22 +89,69 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	}
 }
 
+func (ck *Clerk) CallJoin(i int, args *JoinArgs, reply *JoinReply, timer int) bool {
+	if timer > 5 {
+		return false
+	}
+	ok := ck.servers[i].Call("ShardCtrler.Join", args, reply)
+	if !ok {
+		newreply := JoinReply{}
+		return ck.CallJoin(i, args, &newreply, timer+1)
+	} else {
+		if reply.Err == OK {
+			return true
+		} else if reply.Err == ErrWrongLeader {
+			return false
+		} else if reply.Err == ErrorOccurred {
+			return false
+		} else if reply.Err == ErrorTimeDeny {
+			newreply := JoinReply{}
+			return ck.CallJoin(i, args, &newreply, timer+1)
+		}
+	}
+	return false
+}
+
 func (ck *Clerk) Leave(gids []int) {
 	args := &LeaveArgs{}
 	// Your code here.
 	args.GIDs = gids
+	args.Index = nrand()
 
 	for {
 		// try each known server.
-		for _, srv := range ck.servers {
+		for i, _ := range ck.servers {
 			var reply LeaveReply
-			ok := srv.Call("ShardCtrler.Leave", args, &reply)
-			if ok && reply.WrongLeader == false {
+			ok := ck.CallLeave(i, args, &reply, 0)
+			if ok {
 				return
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func (ck *Clerk) CallLeave(i int, args *LeaveArgs, reply *LeaveReply, timer int) bool {
+	if timer > 5 {
+		return false
+	}
+	ok := ck.servers[i].Call("ShardCtrler.Leave", args, reply)
+	if !ok {
+		newreply := LeaveReply{}
+		return ck.CallLeave(i, args, &newreply, timer+1)
+	} else {
+		if reply.Err == OK {
+			return true
+		} else if reply.Err == ErrWrongLeader {
+			return false
+		} else if reply.Err == ErrorOccurred {
+			return false
+		} else if reply.Err == ErrorTimeDeny {
+			newreply := LeaveReply{}
+			return ck.CallLeave(i, args, &newreply, timer+1)
+		}
+	}
+	return false
 }
 
 func (ck *Clerk) Move(shard int, gid int) {
@@ -86,16 +159,40 @@ func (ck *Clerk) Move(shard int, gid int) {
 	// Your code here.
 	args.Shard = shard
 	args.GID = gid
+	args.Index = nrand()
 
 	for {
 		// try each known server.
-		for _, srv := range ck.servers {
+		for i, _ := range ck.servers {
 			var reply MoveReply
-			ok := srv.Call("ShardCtrler.Move", args, &reply)
-			if ok && reply.WrongLeader == false {
+			ok := ck.CallMove(i, args, &reply, 0)
+			if ok {
 				return
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func (ck *Clerk) CallMove(i int, args *MoveArgs, reply *MoveReply, timer int) bool {
+	if timer > 5 {
+		return false
+	}
+	ok := ck.servers[i].Call("ShardCtrler.Move", args, reply)
+	if !ok {
+		newreply := MoveReply{}
+		return ck.CallMove(i, args, &newreply, timer+1)
+	} else {
+		if reply.Err == OK {
+			return true
+		} else if reply.Err == ErrWrongLeader {
+			return false
+		} else if reply.Err == ErrorOccurred {
+			return false
+		} else if reply.Err == ErrorTimeDeny {
+			newreply := MoveReply{}
+			return ck.CallMove(i, args, &newreply, timer+1)
+		}
+	}
+	return false
 }

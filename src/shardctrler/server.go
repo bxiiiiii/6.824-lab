@@ -1,11 +1,23 @@
 package shardctrler
 
+import (
+	"sort"
+	"sync"
+	"time"
 
-import "6.824/raft"
-import "6.824/labrpc"
-import "sync"
-import "6.824/labgob"
+	"6.824/labgob"
+	"6.824/labrpc"
+	"6.824/raft"
+)
 
+// import sync "github.com/sasha-s/go-deadlock"
+
+const (
+	Completed     = "Completed"
+	InProgress    = "InProgress"
+	ErrorOccurred = "ErrorOccurred"
+	ErrorTimeDeny = "ErrorTimeDeny"
+)
 
 type ShardCtrler struct {
 	mu      sync.Mutex
@@ -16,30 +28,323 @@ type ShardCtrler struct {
 	// Your data here.
 
 	configs []Config // indexed by config num
-}
 
+	rqRecord   map[int64]RequestInfo
+	startTimer int64
+	index      int
+	cond       *sync.Cond
+
+	applyIndex int
+}
 
 type Op struct {
 	// Your data here.
+	Type  string
+	Index int64
+
+	Servers map[int][]string
+
+	GIDs []int
+
+	Shard int
+	GID   int
+
+	Num int
 }
 
+type RequestInfo struct {
+	Status  string
+	Rqindex int
+	// Type   string
+}
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
+	sc.mu.Lock()
+	if _, ok := sc.rqRecord[sc.startTimer]; !ok {
+		DEBUG(dPersist, "S%v join deny %v", sc.me, args.Index)
+		reply.Err = ErrorTimeDeny
+		sc.mu.Unlock()
+		return
+	}
+
+	for k, v := range sc.rqRecord {
+		if k == args.Index {
+			switch v.Status {
+			case Completed:
+				DEBUG(dCommit, "S%v join %v is ok", sc.me, args.Index)
+				reply.Err = OK
+			case InProgress:
+				DEBUG(dDrop, "S%v join %v is waiting", sc.me, args.Index)
+				for sc.rqRecord[args.Index].Status == InProgress {
+					sc.cond.Wait()
+				}
+				switch sc.rqRecord[args.Index].Status {
+				case ErrorOccurred:
+					DEBUG(dCommit, "S%v join %v is failed", sc.me, args.Index)
+					reply.Err = ErrorOccurred
+				case Completed:
+					DEBUG(dCommit, "S%v join %v is ok", sc.me, args.Index)
+					reply.Err = OK
+				}
+			case ErrorOccurred:
+				break
+			}
+			sc.mu.Unlock()
+			return
+		}
+	}
+
+	operation := Op{
+		Type:    "Join",
+		Index:   args.Index,
+		Servers: args.Servers,
+	}
+
+	i, _, isLeader := sc.rf.Start(operation)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		sc.mu.Unlock()
+		return
+	}
+	DEBUG(dLog2, "S%v join %v", sc.me, i)
+	sc.rqRecord[args.Index] = RequestInfo{
+		Status:  InProgress,
+		Rqindex: i,
+	}
+
+	for sc.rqRecord[args.Index].Status == InProgress {
+		sc.cond.Wait()
+	}
+	switch sc.rqRecord[args.Index].Status {
+	case ErrorOccurred:
+		DEBUG(dCommit, "S%v join %v is failed", sc.me, args.Index)
+		reply.Err = ErrorOccurred
+	case Completed:
+		DEBUG(dInfo, "S%v join %v is ok", sc.me, i)
+		reply.Err = OK
+	}
+	sc.mu.Unlock()
 }
 
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here.
+	sc.mu.Lock()
+	if _, ok := sc.rqRecord[sc.startTimer]; !ok {
+		DEBUG(dPersist, "S%v leave deny %v", sc.me, args.Index)
+		reply.Err = ErrorTimeDeny
+		sc.mu.Unlock()
+		return
+	}
+
+	for k, v := range sc.rqRecord {
+		if k == args.Index {
+			switch v.Status {
+			case Completed:
+				DEBUG(dCommit, "S%v leave %v is ok", sc.me, args.Index)
+				reply.Err = OK
+			case InProgress:
+				DEBUG(dDrop, "S%v leave %v is waiting", sc.me, args.Index)
+				for sc.rqRecord[args.Index].Status == InProgress {
+					sc.cond.Wait()
+				}
+				switch sc.rqRecord[args.Index].Status {
+				case ErrorOccurred:
+					DEBUG(dCommit, "S%v leave %v is failed", sc.me, args.Index)
+					reply.Err = ErrorOccurred
+				case Completed:
+					DEBUG(dCommit, "S%v leave %v is ok", sc.me, args.Index)
+					reply.Err = OK
+				}
+			case ErrorOccurred:
+				break
+			}
+			sc.mu.Unlock()
+			return
+		}
+	}
+
+	operation := Op{
+		Type:  "Leave",
+		Index: args.Index,
+		GIDs:  args.GIDs,
+	}
+
+	i, _, isLeader := sc.rf.Start(operation)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		sc.mu.Unlock()
+		return
+	}
+	DEBUG(dLog2, "S%v leave %v", sc.me, i)
+	sc.rqRecord[args.Index] = RequestInfo{
+		Status:  InProgress,
+		Rqindex: i,
+	}
+
+	for sc.rqRecord[args.Index].Status == InProgress {
+		sc.cond.Wait()
+	}
+	switch sc.rqRecord[args.Index].Status {
+	case ErrorOccurred:
+		DEBUG(dInfo, "S%v leave %v is failed", sc.me, i)
+		reply.Err = ErrorOccurred
+	case Completed:
+		DEBUG(dInfo, "S%v leave %v is ok", sc.me, i)
+		reply.Err = OK
+	}
+	sc.mu.Unlock()
 }
 
 func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 	// Your code here.
+	sc.mu.Lock()
+	if _, ok := sc.rqRecord[sc.startTimer]; !ok {
+		DEBUG(dPersist, "S%v move deny %v", sc.me, args.Index)
+		reply.Err = ErrorTimeDeny
+		sc.mu.Unlock()
+		return
+	}
+
+	for k, v := range sc.rqRecord {
+		if k == args.Index {
+			switch v.Status {
+			case Completed:
+				DEBUG(dCommit, "S%v move %v is ok", sc.me, args.Index)
+				reply.Err = OK
+				reply.Err = OK
+			case InProgress:
+				DEBUG(dDrop, "S%v move %v is waiting", sc.me, args.Index)
+				for sc.rqRecord[args.Index].Status == InProgress {
+					sc.cond.Wait()
+				}
+				switch sc.rqRecord[args.Index].Status {
+				case ErrorOccurred:
+					DEBUG(dCommit, "S%v move %v is failed", sc.me, args.Index)
+					reply.Err = ErrorOccurred
+				case Completed:
+					DEBUG(dCommit, "S%v move %v is ok", sc.me, args.Index)
+					reply.Err = OK
+				}
+			case ErrorOccurred:
+				break
+			}
+			sc.mu.Unlock()
+			return
+		}
+	}
+
+	operation := Op{
+		Type:  "Move",
+		Index: args.Index,
+		Shard: args.Shard,
+		GID:   args.GID,
+	}
+
+	i, _, isLeader := sc.rf.Start(operation)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		sc.mu.Unlock()
+		return
+	}
+	DEBUG(dLog2, "S%v move %v", sc.me, i)
+	sc.rqRecord[args.Index] = RequestInfo{
+		Status:  InProgress,
+		Rqindex: i,
+	}
+
+	for sc.rqRecord[args.Index].Status == InProgress {
+		sc.cond.Wait()
+	}
+	switch sc.rqRecord[args.Index].Status {
+	case ErrorOccurred:
+		DEBUG(dInfo, "S%v move %v is failed", sc.me, i)
+		reply.Err = ErrorOccurred
+	case Completed:
+		DEBUG(dInfo, "S%v move %v is ok", sc.me, i)
+		reply.Err = OK
+	}
+	sc.mu.Unlock()
 }
 
 func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	// Your code here.
-}
+	sc.mu.Lock()
+	if _, ok := sc.rqRecord[sc.startTimer]; !ok {
+		DEBUG(dPersist, "S%v query deny %v", sc.me, args.Index)
+		reply.Err = ErrorTimeDeny
+		sc.mu.Unlock()
+		return
+	}
 
+	for k, v := range sc.rqRecord {
+		if k == args.Index {
+			switch v.Status {
+			case Completed:
+				DEBUG(dCommit, "S%v query %v is ok", sc.me, args.Index)
+				reply.Err = OK
+			case InProgress:
+				DEBUG(dDrop, "S%v query %v is waiting", sc.me, args.Index)
+				for sc.rqRecord[args.Index].Status == InProgress {
+					sc.cond.Wait()
+				}
+				switch sc.rqRecord[args.Index].Status {
+				case ErrorOccurred:
+					DEBUG(dCommit, "S%v query %v is failed", sc.me, args.Index)
+					reply.Err = ErrorOccurred
+				case Completed:
+					DEBUG(dCommit, "S%v query %v is ok", sc.me, args.Index)
+					reply.Err = OK
+					if args.Num == -1 && args.Num >= len(sc.configs) {
+						reply.Config = sc.configs[len(sc.configs)-1]
+					} else {
+						reply.Config = sc.configs[args.Num]
+					}
+				}
+			case ErrorOccurred:
+				break
+			}
+			sc.mu.Unlock()
+			return
+		}
+	}
+
+	operation := Op{
+		Type:  "Query",
+		Index: args.Index,
+		Num:   args.Num,
+	}
+
+	i, _, isLeader := sc.rf.Start(operation)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		sc.mu.Unlock()
+		return
+	}
+	DEBUG(dLog2, "S%v query %v", sc.me, i)
+	sc.rqRecord[args.Index] = RequestInfo{
+		Status:  InProgress,
+		Rqindex: i,
+	}
+
+	for sc.rqRecord[args.Index].Status == InProgress {
+		sc.cond.Wait()
+	}
+	switch sc.rqRecord[args.Index].Status {
+	case ErrorOccurred:
+		DEBUG(dCommit, "S%v query %v is failed", sc.me, args.Index)
+		reply.Err = ErrorOccurred
+	case Completed:
+		DEBUG(dInfo, "S%v query %v is ok", sc.me, i)
+		reply.Err = OK
+		if args.Num == -1 || args.Num >= len(sc.configs) {
+			reply.Config = sc.configs[len(sc.configs)-1]
+		} else {
+			reply.Config = sc.configs[args.Num]
+		}
+	}
+	sc.mu.Unlock()
+}
 
 //
 // the tester calls Kill() when a ShardCtrler instance won't
@@ -75,6 +380,220 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
 
 	// Your code here.
-
+	sc.applyIndex = 0
+	sc.cond = sync.NewCond(&sc.mu)
+	sc.startTimer = -1
+	sc.rqRecord = make(map[int64]RequestInfo)
+	// sync.Opts.DeadlockTimeout = time.Second*1
+	var newShards [NShards]int
+	for i := range newShards {
+		newShards[i] = 0
+	}
+	// newGroups := make(map[int][]string)
+	sc.configs[0] = Config{
+		Num:    0,
+		Shards: newShards,
+	}
+	go sc.Timer()
+	go sc.Apply()
 	return sc
+}
+
+func (sc *ShardCtrler) Apply() {
+	for entry := range sc.applyCh {
+		if entry.CommandValid {
+			sc.mu.Lock()
+			if entry.CommandIndex <= sc.applyIndex {
+				sc.mu.Unlock()
+				continue
+			}
+			op := (entry.Command).(Op)
+			switch op.Type {
+			case "Join":
+				sc.ApplyJoin(op.Servers)
+			case "Leave":
+				sc.ApplyLeave(op.GIDs)
+			case "Move":
+				sc.ApplyMove(op.Shard, op.GID)
+			case "LeaderTimer":
+				if sc.index == entry.CommandIndex || sc.startTimer == -1 {
+					sc.startTimer = op.Index
+					DEBUG(dClient, "S%v timer: %v record:%v", sc.me, sc.startTimer, sc.rqRecord)
+				}
+			}
+			for k, v := range sc.rqRecord {
+				if v.Rqindex == entry.CommandIndex {
+					if k != op.Index {
+						sc.rqRecord[k] = RequestInfo{
+							Status:  ErrorOccurred,
+							Rqindex: v.Rqindex,
+						}
+					}
+				}
+			}
+			sc.rqRecord[op.Index] = RequestInfo{
+				Status:  Completed,
+				Rqindex: entry.CommandIndex,
+			}
+			DEBUG(dError, "S%v after apply [%v]", sc.me, sc.rqRecord)
+			sc.applyIndex = entry.CommandIndex
+			sc.mu.Unlock()
+			sc.cond.Broadcast()
+		}
+	}
+}
+
+func (sc *ShardCtrler) ApplyJoin(servers map[int][]string) {
+	// lastConfigNum := len(sc.configs) - 1
+	newConfigNum := len(sc.configs)
+	newGroups := make(map[int][]string)
+	var newShards [NShards]int
+
+	for k, v := range sc.configs[newConfigNum-1].Groups {
+		newGroups[k] = v
+	}
+	for k, v := range servers {
+		newGroups[k] = v
+	}
+
+	i := 0
+	sortedGroups := []int{}
+	for k := range newGroups {
+		sortedGroups = append(sortedGroups, k)
+	}
+	sort.Ints(sortedGroups)
+	for {
+		for _, k := range sortedGroups {
+			newShards[i] = k
+			i++
+			if i >= 10 {
+				break
+			}
+		}
+		if i >= 10 {
+			break
+		}
+	}
+
+	sc.configs = append(sc.configs, Config{
+		Num:    newConfigNum,
+		Shards: newShards,
+		Groups: newGroups,
+	})
+	DEBUG(dError, "S%v [after join]%v", sc.me, sc.configs[len(sc.configs)-1])
+}
+
+func (sc *ShardCtrler) ApplyLeave(gids []int) {
+	DEBUG(dClient, "S%v [apply leave] gids: %v", sc.me, gids)
+	newConfigNum := len(sc.configs)
+	newGroups := make(map[int][]string)
+	var newShards [NShards]int
+
+	for k, v := range sc.configs[newConfigNum-1].Groups {
+		ice := true
+		for _, gid := range gids {
+			if k == gid {
+				ice = false
+				break
+			}
+		}
+		if ice {
+			newGroups[k] = v
+		}
+	}
+
+	if len(newGroups) == 0 {
+		sc.configs = append(sc.configs, Config{
+			Num:    newConfigNum,
+		})
+		return
+	}
+
+	i := 0
+	sortedGroups := []int{}
+	for k := range newGroups {
+		sortedGroups = append(sortedGroups, k)
+	}
+	sort.Ints(sortedGroups)
+	for {
+		for _, k := range sortedGroups {
+			newShards[i] = k
+			i++
+			if i >= 10 {
+				break
+			}
+		}
+		if i >= 10 {
+			break
+		}
+	}
+
+	sc.configs = append(sc.configs, Config{
+		Num:    newConfigNum,
+		Shards: newShards,
+		Groups: newGroups,
+	})
+	DEBUG(dError, "S%v [after leave]%v", sc.me, sc.configs[len(sc.configs)-1])
+}
+
+func (sc *ShardCtrler) ApplyMove(shard int, gid int) {
+	newConfigNum := len(sc.configs)
+	newGroups := make(map[int][]string)
+	var newShards [NShards]int
+
+	for k, v := range sc.configs[newConfigNum-1].Groups {
+		newGroups[k] = v
+	}
+	for k, v := range sc.configs[newConfigNum-1].Shards {
+		if shard == k {
+			newShards[k] = gid
+		} else {
+			newShards[k] = v
+		}
+	}
+
+	sc.configs = append(sc.configs, Config{
+		Num:    newConfigNum,
+		Shards: newShards,
+		Groups: newGroups,
+	})
+}
+
+func (sc *ShardCtrler) Timer() {
+	for {
+		// if sc.killed() {
+		// 	return
+		// }
+		sc.mu.Lock()
+		if sc.startTimer != -1 {
+			sc.mu.Unlock()
+			break
+		}
+		sc.mu.Unlock()
+		Operation := Op{
+			Type:  "LeaderTimer",
+			Index: nrand(),
+		}
+		i, _, isleader := sc.rf.Start(Operation)
+		if isleader {
+			sc.mu.Lock()
+			sc.index = i
+			sc.startTimer = Operation.Index
+			sc.mu.Unlock()
+			break
+		} else {
+			time.Sleep(time.Millisecond * 500)
+		}
+	}
+	for {
+		operation := Op{
+			Type:  "Timer",
+			Index: nrand(),
+		}
+		i,_,isleader := sc.rf.Start(operation)
+		if isleader {
+		DEBUG(dTimer, "S%v add a Timer i:%v", sc.me, i)
+		}
+		time.Sleep(time.Second)
+	}
 }
