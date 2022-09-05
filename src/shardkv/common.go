@@ -27,6 +27,8 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Index    int64
+	ShardNum int
 }
 
 type PutAppendReply struct {
@@ -36,9 +38,30 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	Index    int64
+	ShardNum int
 }
 
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+type RequireShardArgs struct {
+	Index    int64
+	ShardNum int
+}
+
+type RequireShardReply struct {
+	Err       Err
+	Shard Shard
+}
+
+type AppendShardArgs struct {
+	Index int64
+	Shard Shard
+}
+
+type AppendShardReply struct {
+	Err Err
 }
