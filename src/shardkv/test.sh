@@ -1,0 +1,10 @@
+python dstest.py -p 7 -n 100 -r TestStaticShards
+python dstest.py -p 7 -n 100 -r TestJoinLeave
+python dstest.py -p 7 -n 100 -r TestSnapshot
+python dstest.py -p 7 -n 100 -r TestMissChange
+python dstest.py -p 7 -n 100 -r TestConcurrent1
+python dstest.py -p 7 -n 100 -r TestConcurrent2
+python dstest.py -p 7 -n 100 -r TestConcurrent3
+python dstest.py -p 7 -n 100 -r TestUnreliable1
+python dstest.py -p 7 -n 100 -r TestUnreliable2
+python dstest.py -p 7 -n 100 -r TestUnreliable3

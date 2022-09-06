@@ -68,11 +68,11 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 func (ck *Clerk) Get(key string) string {
 	shard := key2shard(key)
 	args := GetArgs{
-		Key: key,
-		Index: nrand(),
+		Key:      key,
+		Index:    nrand(),
 		ShardNum: shard,
 	}
-
+	DEBUG(dLog, "[client]get %v %v", shard, args.Index)
 	for {
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
@@ -81,7 +81,7 @@ func (ck *Clerk) Get(key string) string {
 				srv := ck.make_end(servers[si])
 				var reply GetReply
 				ok, value := ck.CallGet(srv, &args, &reply, 0)
-				if ok  {
+				if ok {
 					return value
 				}
 			}
@@ -103,13 +103,12 @@ func (ck *Clerk) CallGet(srv *labrpc.ClientEnd, args *GetArgs, reply *GetReply, 
 		newreply := GetReply{}
 		return ck.CallGet(srv, args, &newreply, timer+1)
 	} else {
-		if reply.Err == OK || reply.Err == ErrNoKey{
+		switch reply.Err {
+		case OK, ErrNoKey:
 			return true, reply.Value
-		} else if reply.Err == ErrWrongLeader {
+		case ErrWrongLeader, ErrorOccurred, ErrWrongGroup:
 			return false, ""
-		} else if reply.Err == ErrorOccurred {
-			return false, ""
-		} else if reply.Err == ErrorTimeDeny {
+		case ErrorTimeDeny:
 			newreply := GetReply{}
 			return ck.CallGet(srv, args, &newreply, timer+1)
 		}
@@ -124,13 +123,13 @@ func (ck *Clerk) CallGet(srv *labrpc.ClientEnd, args *GetArgs, reply *GetReply, 
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	shard := key2shard(key)
 	args := PutAppendArgs{
-		Key: key,
-		Value: value,
-		Op: op,
-		Index: nrand(),
+		Key:      key,
+		Value:    value,
+		Op:       op,
+		Index:    nrand(),
 		ShardNum: shard,
 	}
-
+	DEBUG(dLog, "[client]p/a %v %v", shard, args.Index)
 	for {
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
@@ -158,13 +157,12 @@ func (ck *Clerk) CallPutAppend(srv *labrpc.ClientEnd, args *PutAppendArgs, reply
 		newreply := PutAppendReply{}
 		return ck.CallPutAppend(srv, args, &newreply, timer+1)
 	} else {
-		if reply.Err == OK {
+		switch reply.Err {
+		case OK:
 			return true
-		} else if reply.Err == ErrWrongLeader {
+		case ErrWrongLeader, ErrorOccurred, ErrWrongGroup:
 			return false
-		} else if reply.Err == ErrorOccurred {
-			return false
-		} else if reply.Err == ErrorTimeDeny {
+		case ErrorTimeDeny:
 			newreply := PutAppendReply{}
 			return ck.CallPutAppend(srv, args, &newreply, timer+1)
 		}
