@@ -25,7 +25,10 @@ type Op struct {
 
 	Config shardctrler.Config
 
-	Shard Shard
+	PreConfig shardctrler.Config
+	CurConfig shardctrler.Config
+
+	Shards map[int]Shard
 }
 
 const (
@@ -305,33 +308,33 @@ func (kv *ShardKV) HandleRequireShard(args *RequireShardArgs, reply *RequireShar
 	//Todo: some check
 
 	// DEBUG(dClient, "S%v[shardkv][gid:%v] RequireShard %v", )
-	for k, v := range kv.rqRecord {
-		if k == args.Index {
-			if v.Status == Completed {
-				DEBUG(dCommit, "S%v[shardkv][gid:%v] RequireShard is ok", kv.me, kv.gid, args.Index)
-				reply.Err = OK
-				reply.Shard = kv.shards[args.ShardNum]
-			} else if v.Status == InProgress {
-				DEBUG(dDrop, "S%v[shardkv][gid:%v] RequireShard %v is waiting", kv.me, kv.gid, args.Index)
-				for kv.rqRecord[args.Index].Status == InProgress {
-					kv.cond.Wait()
-				}
-				if kv.rqRecord[args.Index].Status == Completed {
-					DEBUG(dCommit, "S%v[shardkv][gid:%v] RequireShard %v is ok", kv.me, kv.gid, args.Index)
-					reply.Err = OK
-					reply.Shard = kv.shards[args.ShardNum]
-				} else if kv.rqRecord[args.Index].Status == ErrorOccurred {
-					DEBUG(dCommit, "S%v[shardkv][gid:%v] RequireShard %v is failed", kv.me, kv.gid, args.Index)
-					// delete(kv.record, args.Index)
-					reply.Err = ErrorOccurred
-				}
-			} else if v.Status == ErrorOccurred {
-				break
-			}
-			kv.mu.Unlock()
-			return
-		}
-	}
+	// for k, v := range kv.rqRecord {
+	// 	if k == args.Index {
+	// 		if v.Status == Completed {
+	// 			DEBUG(dCommit, "S%v[shardkv][gid:%v] RequireShard is ok %v", kv.me, kv.gid, args.Index)
+	// 			reply.Err = OK
+	// 			reply.Shard = kv.shards[args.ShardNum]
+	// 		} else if v.Status == InProgress {
+	// 			DEBUG(dDrop, "S%v[shardkv][gid:%v] RequireShard %v is waiting", kv.me, kv.gid, args.Index)
+	// 			for kv.rqRecord[args.Index].Status == InProgress {
+	// 				kv.cond.Wait()
+	// 			}
+	// 			if kv.rqRecord[args.Index].Status == Completed {
+	// 				DEBUG(dCommit, "S%v[shardkv][gid:%v] RequireShard %v is ok", kv.me, kv.gid, args.Index)
+	// 				reply.Err = OK
+	// 				reply.Shard = kv.shards[args.ShardNum]
+	// 			} else if kv.rqRecord[args.Index].Status == ErrorOccurred {
+	// 				DEBUG(dCommit, "S%v[shardkv][gid:%v] RequireShard %v is failed", kv.me, kv.gid, args.Index)
+	// 				// delete(kv.record, args.Index)
+	// 				reply.Err = ErrorOccurred
+	// 			}
+	// 		} else if v.Status == ErrorOccurred {
+	// 			break
+	// 		}
+	// 		kv.mu.Unlock()
+	// 		return
+	// 	}
+	// }
 
 	operation := Op{
 		Type:     "RequireShard",
@@ -381,11 +384,11 @@ func (kv *ShardKV) HandleRequireShard(args *RequireShardArgs, reply *RequireShar
 
 func (kv *ShardKV) HandleAppendShard(args *AppendShardArgs, reply *AppendShardReply) {
 	kv.mu.Lock()
-	if kv.curConfig.Num != args.ConfigNum {
-		reply.Err = ErrorTimeDeny
-		kv.mu.Unlock()
-		return
-	}
+	// if kv.curConfig.Num != args.PreConfig.Num {
+	// 	reply.Err = ErrorTimeDeny
+	// 	kv.mu.Unlock()
+	// 	return
+	// }
 	if _, ok := kv.rqRecord[kv.startTimer]; !ok {
 		// DEBUG(dPersist, "S%v[shardkv][gid:%v] p/a deny %v", kv.me, kv.gid, args.Index)
 		reply.Err = ErrorTimeDeny
@@ -423,9 +426,11 @@ func (kv *ShardKV) HandleAppendShard(args *AppendShardArgs, reply *AppendShardRe
 	}
 
 	operation := Op{
-		Type:  "AppendShard",
-		Index: args.Index,
-		Shard: args.Shard,
+		Type:      "AppendShard",
+		Index:     args.Index,
+		Shards:    args.Shards,
+		CurConfig: args.CurConfig,
+		PreConfig: args.PreConfig,
 	}
 	// fmt.Println("----", kv.storage)
 	i, _, isLeader := kv.rf.Start(operation)
@@ -543,7 +548,7 @@ func (kv *ShardKV) Apply() {
 			case "Put":
 				for kv.shards[op.ShardNum].Status != "Working" {
 					kv.cond.Wait()
-				} 
+				}
 				// kv.TaskQueue[op.ShardNum] = append(kv.TaskQueue[op.ShardNum], op)
 				if kv.shards[op.ShardNum].RqRecord[op.Index].Status == Completed {
 					kv.mu.Unlock()
@@ -553,7 +558,7 @@ func (kv *ShardKV) Apply() {
 			case "Append":
 				for kv.shards[op.ShardNum].Status != "Working" {
 					kv.cond.Wait()
-				} 
+				}
 				// kv.TaskQueue[op.ShardNum] = append(kv.TaskQueue[op.ShardNum], op)
 				if kv.shards[op.ShardNum].RqRecord[op.Index].Status == Completed {
 					kv.mu.Unlock()
@@ -567,13 +572,26 @@ func (kv *ShardKV) Apply() {
 					// DEBUG(dClient, "S%v[shardkv][gid:%v] timer: %v rqRecord:%v", kv.me, kv.gid, kv.startTimer, kv.rqRecord)
 				}
 			case "ConfigChange":
-				kv.ApplyConfigChange(op.Config)
+				if kv.curConfig.Num < op.Config.Num {
+					kv.ApplyConfigChange(op.Config)
+				}
 			case "AppendShard":
-				kv.shards[op.Shard.ShardNum] = Shard{
-					ShardNum: op.Shard.ShardNum,
-					Storage:  op.Shard.Storage,
-					RqRecord: op.Shard.RqRecord,
-					Status:   "Working",
+				DEBUG(dSnap, "S%v[shardkv][gid:%v] AppendShard %v", kv.me, kv.gid, op)
+				if kv.curConfig.Num < op.Config.Num {
+					kv.shards = make(map[int]Shard)
+					for k, v := range op.Shards {
+						kv.shards[k] = v
+					}
+					// kv.curConfig = shardctrler.Config{Num: op.CurConfig.Num, Shards: op.CurConfig.Shards, Groups: make(map[int][]string)}
+					// for k, v := range op.CurConfig.Groups {
+					// 	kv.curConfig.Groups[k] = v
+					// }
+					// kv.preConfig = shardctrler.Config{Num: op.PreConfig.Num, Shards: op.PreConfig.Shards, Groups: make(map[int][]string)}
+					// for k, v := range op.PreConfig.Groups {
+					// 	kv.preConfig.Groups[k] = v
+					// }
+					kv.curConfig = op.CurConfig
+					kv.preConfig = op.PreConfig
 				}
 			}
 
@@ -629,11 +647,22 @@ func (kv *ShardKV) Apply() {
 			shards := make(map[int]Shard)
 			rqRecord := make(map[int64]RequestInfo)
 			var curConfig shardctrler.Config
-			if d.Decode(&applyIndex) != nil || d.Decode(&shards) != nil || d.Decode(&rqRecord) != nil || d.Decode(&curConfig) != nil {
+			var preConfig shardctrler.Config
+			if d.Decode(&applyIndex) != nil || d.Decode(&shards) != nil || d.Decode(&rqRecord) != nil || d.Decode(&curConfig) != nil || d.Decode(&preConfig) != nil {
 				panic("decode fail")
 			} else {
+				DEBUG(dSnap, "S%v [shardkv][gid:%v] apply snap %v", kv.me, kv.gid, applyIndex)
 				kv.applyIndex = entry.SnapshotIndex
+				// kv.curConfig = shardctrler.Config{Num: curConfig.Num, Shards: curConfig.Shards, Groups: make(map[int][]string)}
+				// for k, v := range curConfig.Groups {
+				// 	kv.curConfig.Groups[k] = v
+				// }
+				// kv.preConfig = shardctrler.Config{Num: preConfig.Num, Shards: preConfig.Shards, Groups: make(map[int][]string)}
+				// for k, v := range preConfig.Groups {
+				// 	kv.preConfig.Groups[k] = v
+				// }
 				kv.curConfig = curConfig
+				kv.preConfig = preConfig
 				for k, shard := range shards {
 					kv.shards[k] = shard
 				}
@@ -668,13 +697,33 @@ func (kv *ShardKV) Apply() {
 }
 
 func (kv *ShardKV) ApplyConfigChange(lastConfig shardctrler.Config) {
-
-	kv.preConfig = kv.curConfig
-	kv.curConfig = lastConfig
-	// var need2Control []int
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		return
+	}
+	var Preneed2Control []int
+	for shardNum, gid := range kv.curConfig.Shards {
+		if kv.gid == gid {
+			Preneed2Control = append(Preneed2Control, shardNum)
+		}
+	}
+	if kv.curConfig.Num != 0 {
+		for _, shardNum := range Preneed2Control {
+			for kv.shards[shardNum].Status != "Working" {
+				kv.cond.Wait()
+			}
+		}
+	}
+	DEBUG(dError, "S%v [shardkv][gid:%v] -pre-cur:%v-%v", kv.me, kv.gid, kv.preConfig, kv.curConfig)
+	kv.preConfig, kv.curConfig = kv.curConfig, lastConfig
+	// kv.curConfig = lastConfig
+	DEBUG(dError, "S%v [shardkv][gid:%v] pre-cur:%v-%v", kv.me, kv.gid, kv.preConfig, kv.curConfig)
+	if kv.curConfig.Num != kv.preConfig.Num+1 {
+		kv.preConfig = kv.mck.Query(kv.curConfig.Num - 1)
+	}
+	var Curneed2Control []int
 	for shardNum, gid := range lastConfig.Shards {
 		if kv.gid == gid {
-			// need2Control = append(need2Control, shardNum)
+			Curneed2Control = append(Curneed2Control, shardNum)
 			if _, ok := kv.shards[shardNum]; !ok {
 				kv.shards[shardNum] = Shard{
 					ShardNum: shardNum,
@@ -682,11 +731,33 @@ func (kv *ShardKV) ApplyConfigChange(lastConfig shardctrler.Config) {
 					RqRecord: make(map[int64]RequestInfo),
 					Status:   "WaitForAdd",
 				}
+			} else {
+				if kv.shards[shardNum].Status != "Working" {
+					shard := Shard{
+						ShardNum: shardNum,
+						Storage:  make(map[string]string),
+						RqRecord: make(map[int64]RequestInfo),
+						Status:   "WaitForAdd",
+					}
+					shard.Storage = kv.shards[shardNum].Storage
+					shard.RqRecord = kv.shards[shardNum].RqRecord
+					kv.shards[shardNum] = shard
+				}
 			}
-			
+
 			if kv.preConfig.Shards[shardNum] != 0 {
 				if kv.preConfig.Shards[shardNum] != kv.gid {
 					go kv.RequireShard(shardNum)
+				} else {
+					shard := Shard{
+						ShardNum: shardNum,
+						Storage:  make(map[string]string),
+						RqRecord: make(map[int64]RequestInfo),
+						Status:   "Working",
+					}
+					shard.Storage = kv.shards[shardNum].Storage
+					shard.RqRecord = kv.shards[shardNum].RqRecord
+					kv.shards[shardNum] = shard
 				}
 			} else {
 				kv.shards[shardNum] = Shard{
@@ -715,6 +786,14 @@ func (kv *ShardKV) ApplyConfigChange(lastConfig shardctrler.Config) {
 		}
 	}
 	DEBUG(dClient, "S%v[shardkv][gid:%v]---%v", kv.me, kv.gid, kv.shards)
+	if kv.curConfig.Num != 0 {
+		for _, shardNum := range Curneed2Control {
+			for kv.shards[shardNum].Status != "Working" {
+				kv.cond.Wait()
+			}
+		}
+	}
+	go kv.AppendShard()
 	// Todo: delete
 }
 
@@ -753,8 +832,9 @@ func (kv *ShardKV) RequireShard(shardNum int) {
 					shard.Storage = reply.Shard.Storage
 					shard.RqRecord = reply.Shard.RqRecord
 					kv.shards[shardNum] = shard
-					kv.cond.Broadcast()
+					DEBUG(dLog2, "S%v[shardkv][gid:%v] RequireShard success %v", kv.me, kv.gid, shard)
 					kv.mu.Unlock()
+					kv.cond.Broadcast()
 					// shard := Shard{
 					// 	ShardNum: reply.Shard.ShardNum,
 					// 	Storage:  make(map[string]string),
@@ -764,12 +844,15 @@ func (kv *ShardKV) RequireShard(shardNum int) {
 					// shard.Storage = reply.Shard.Storage
 					// shard.RqRecord = reply.Shard.RqRecord
 					// go kv.AppendShard(shard)
-					DEBUG(dLog2, "S%v[shardkv][gid:%v] RequireShard success %v", kv.me, kv.gid, shard)
 					return
 				} else {
 					if reply.Err == ErrorConfigOutOfDate {
 						return
 					}
+					// } else if reply.Err == ErrWrongGroup {
+					// 	kv.RequireShard2Group(reply.Gid)
+					// 	return
+					// }
 				}
 			}
 		}
@@ -796,25 +879,44 @@ func (kv *ShardKV) CallRequireShard(srv *labrpc.ClientEnd, args *RequireShardArg
 			return kv.CallRequireShard(srv, args, &newreply, timer+1)
 		} else if reply.Err == ErrorConfigOutOfDate {
 			return false
+		} else if reply.Err == ErrWrongGroup {
+			return false
 		}
 	}
 	return false
 }
 
-func (kv *ShardKV) AppendShard(shard Shard) {
-	args := AppendShardArgs{
-		Shard: shard,
-		Index: nrand(),
-	}
+// func (kv *ShardKV) RequireShard2Group(gid int) {
+// 	for si := 0; si <
+// }
 
+func (kv *ShardKV) AppendShard() {
 	kv.mu.Lock()
+	shards := make(map[int]Shard)
+	for k, v := range kv.shards {
+		shards[k] = v
+	}
+	args := AppendShardArgs{
+		Shards: shards,
+		Index:  nrand(),
+		// 	CurConfig: shardctrler.Config{Num: kv.curConfig.Num, Shards: kv.curConfig.Shards, Groups: make(map[int][]string)},
+		// 	PreConfig: shardctrler.Config{Num: kv.preConfig.Num, Shards: kv.preConfig.Shards, Groups: make(map[int][]string)},
+		CurConfig: kv.curConfig,
+		PreConfig: kv.preConfig,
+	}
+	// for k, v := range kv.curConfig.Groups {
+	// 	args.CurConfig.Groups[k] = v
+	// }
+	// for k, v := range kv.preConfig.Groups {
+	// args.PreConfig.Groups[k] = v
+	// }
+	DEBUG(dLeader, "S%v [shardkv][gid:%v] send AppendShard %v", kv.me, kv.gid, args)
 	// preConfig := kv.preConfig
 	curConfig := kv.curConfig
 	kv.mu.Unlock()
 
 	for {
-		gid := curConfig.Shards[shard.ShardNum]
-		if servers, ok := curConfig.Groups[gid]; ok {
+		if servers, ok := curConfig.Groups[kv.gid]; ok {
 			for si := 0; si < len(servers); si++ {
 				srv := kv.make_end(servers[si])
 				var reply AppendShardReply
@@ -899,12 +1001,14 @@ func (kv *ShardKV) Snap() {
 	for {
 		kv.mu.Lock()
 		if kv.applyIndex > kv.snapshotIndex && kv.rf.Persister.RaftStateSize() >= kv.maxraftstate {
+			DEBUG(dDrop, "S%v[shardkv][gid:%v] snap %v", kv.me, kv.gid, kv.applyIndex)
 			w := new(bytes.Buffer)
 			e := labgob.NewEncoder(w)
 			e.Encode(kv.applyIndex)
 			e.Encode(kv.shards)
 			e.Encode(kv.rqRecord)
 			e.Encode(kv.curConfig)
+			e.Encode(kv.preConfig)
 			data := w.Bytes()
 			kv.snapshotIndex = kv.applyIndex
 			kv.rf.Snapshot(kv.applyIndex, data)
@@ -914,8 +1018,4 @@ func (kv *ShardKV) Snap() {
 		}
 		time.Sleep(time.Millisecond * 50)
 	}
-}
-
-func (kv *ShardKV) ApplyTask() {
-	
 }
