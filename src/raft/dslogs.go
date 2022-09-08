@@ -1,20 +1,22 @@
 package raft
-import(
-	"os"
+
+import (
+	// "fmt"
 	"log"
+	"os"
 	"strconv"
-	"time"
-	"fmt"
 	"sync"
+	"time"
 )
+
 // Retrieve the verbosity level from an environment variable
 func getVerbosity() int {
-	v := os.Getenv("VERBOSE")	
+	v := os.Getenv("VERBOSE")
 	level := 0
-	if v != ""{
+	if v != "" {
 		var err error
 		level, err = strconv.Atoi(v)
-		if err != nil{
+		if err != nil {
 			log.Fatalf("Invalid verbosity %v", v)
 		}
 	}
@@ -22,6 +24,7 @@ func getVerbosity() int {
 }
 
 type logTopic string
+
 const (
 	dClient  logTopic = "CLNT"
 	dCommit  logTopic = "CMIT"
@@ -47,7 +50,7 @@ var mutex sync.Mutex
 
 func LOGinit() {
 	mutex.Lock()
-	if debugVerbosity == 0{
+	if debugVerbosity == 0 {
 		debugVerbosity = getVerbosity()
 		debugStart = time.Now()
 	}
@@ -57,12 +60,12 @@ func LOGinit() {
 
 func DEBUG(topic logTopic, format string, a ...interface{}) {
 	// if debugVerbosity > 1 {
-		mutex.Lock()
-		time := time.Since(debugStart).Microseconds()
-		mutex.Unlock()
-		time /= 100
-		prefix := fmt.Sprintf("%06d %v ", time, string(topic))
-		format = prefix + format
-		log.Printf(format, a...)
+	// mutex.Lock()
+	// time := time.Since(debugStart).Microseconds()
+	// mutex.Unlock()
+	// time /= 100
+	// prefix := fmt.Sprintf("%06d %v ", time, string(topic))
+	// format = prefix + format
+	// log.Printf(format, a...)
 	// }
 }

@@ -9,7 +9,7 @@ import (
 	"6.824/labrpc"
 	"6.824/raft"
 	"6.824/shardctrler"
-	sync "github.com/sasha-s/go-deadlock"
+	// sync "github.com/sasha-s/go-deadlock"
 )
 
 type Op struct {
@@ -40,7 +40,7 @@ const (
 )
 
 type ShardKV struct {
-	mu           sync.Mutex
+	mu           dsync.Mutex
 	me           int
 	rf           *raft.Raft
 	applyCh      chan raft.ApplyMsg
@@ -524,7 +524,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.startTimer = -1
 	kv.cond = dsync.NewCond(&kv.mu)
 	kv.applyIndex = 0
-	sync.Opts.DeadlockTimeout = time.Second
+	// sync.Opts.DeadlockTimeout = time.Second
 	LOGinit()
 	DEBUG(dInfo, "S%v[shardkv][gid:%v] Started", kv.me, kv.gid)
 	go kv.Timer()
@@ -547,6 +547,7 @@ func (kv *ShardKV) Apply() {
 			switch op.Type {
 			case "Put":
 				for kv.shards[op.ShardNum].Status != "Working" {
+					DEBUG(dClient, "S%v[shardkv][gid:%v] apply put status [%v]", kv.me, kv.gid, kv.shards[op.ShardNum].Status)
 					kv.cond.Wait()
 				}
 				// kv.TaskQueue[op.ShardNum] = append(kv.TaskQueue[op.ShardNum], op)
@@ -577,10 +578,22 @@ func (kv *ShardKV) Apply() {
 				}
 			case "AppendShard":
 				DEBUG(dSnap, "S%v[shardkv][gid:%v] AppendShard %v", kv.me, kv.gid, op)
-				if kv.curConfig.Num < op.Config.Num {
+				if kv.curConfig.Num < op.CurConfig.Num {
 					kv.shards = make(map[int]Shard)
 					for k, v := range op.Shards {
-						kv.shards[k] = v
+						shard := Shard{
+							ShardNum: v.ShardNum,
+							Storage:  make(map[string]string),
+							RqRecord: make(map[int64]RequestInfo),
+							Status:   v.Status,
+						}
+						for i, j := range v.Storage {
+							shard.Storage[i] = j
+						}
+						for i, j := range v.RqRecord {
+							shard.RqRecord[i] = j
+						}
+						kv.shards[k] = shard
 					}
 					// kv.curConfig = shardctrler.Config{Num: op.CurConfig.Num, Shards: op.CurConfig.Shards, Groups: make(map[int][]string)}
 					// for k, v := range op.CurConfig.Groups {
@@ -894,13 +907,27 @@ func (kv *ShardKV) AppendShard() {
 	kv.mu.Lock()
 	shards := make(map[int]Shard)
 	for k, v := range kv.shards {
-		shards[k] = v
+		shard := Shard{
+			ShardNum: v.ShardNum,
+			Storage:  make(map[string]string),
+			RqRecord: make(map[int64]RequestInfo),
+			Status:   v.Status,
+		}
+		// shard.Storage = v.Storage
+		// shard.RqRecord = v.RqRecord
+		for i, j := range v.Storage {
+			shard.Storage[i] = j
+		}
+		for i, j := range v.RqRecord {
+			shard.RqRecord[i] = j
+		}
+		shards[k] = shard
 	}
 	args := AppendShardArgs{
 		Shards: shards,
 		Index:  nrand(),
-		// 	CurConfig: shardctrler.Config{Num: kv.curConfig.Num, Shards: kv.curConfig.Shards, Groups: make(map[int][]string)},
-		// 	PreConfig: shardctrler.Config{Num: kv.preConfig.Num, Shards: kv.preConfig.Shards, Groups: make(map[int][]string)},
+		// CurConfig: shardctrler.Config{Num: kv.curConfig.Num, Shards: kv.curConfig.Shards, Groups: make(map[int][]string)},
+		// PreConfig: shardctrler.Config{Num: kv.preConfig.Num, Shards: kv.preConfig.Shards, Groups: make(map[int][]string)},
 		CurConfig: kv.curConfig,
 		PreConfig: kv.preConfig,
 	}
