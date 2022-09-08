@@ -394,6 +394,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 		Num:    0,
 		Shards: newShards,
 	}
+	LOGinit()
 	go sc.Timer()
 	go sc.Apply()
 	return sc
@@ -447,7 +448,6 @@ func (sc *ShardCtrler) ApplyJoin(servers map[int][]string) {
 	// lastConfigNum := len(sc.configs) - 1
 	newConfigNum := len(sc.configs)
 	newGroups := make(map[int][]string)
-	var newShards [NShards]int
 
 	for k, v := range sc.configs[newConfigNum-1].Groups {
 		newGroups[k] = v
@@ -456,28 +456,15 @@ func (sc *ShardCtrler) ApplyJoin(servers map[int][]string) {
 		newGroups[k] = v
 	}
 
-	i := 0
 	sortedGroups := []int{}
 	for k := range newGroups {
 		sortedGroups = append(sortedGroups, k)
 	}
 	sort.Ints(sortedGroups)
-	for {
-		for _, k := range sortedGroups {
-			newShards[i] = k
-			i++
-			if i >= 10 {
-				break
-			}
-		}
-		if i >= 10 {
-			break
-		}
-	}
 
 	sc.configs = append(sc.configs, Config{
 		Num:    newConfigNum,
-		Shards: newShards,
+		Shards: sc.AllocShard(sortedGroups, sc.configs[newConfigNum-1].Shards),
 		Groups: newGroups,
 	})
 	DEBUG(dError, "S%v [after join]%v", sc.me, sc.configs[len(sc.configs)-1])
@@ -487,7 +474,6 @@ func (sc *ShardCtrler) ApplyLeave(gids []int) {
 	DEBUG(dClient, "S%v [apply leave] gids: %v", sc.me, gids)
 	newConfigNum := len(sc.configs)
 	newGroups := make(map[int][]string)
-	var newShards [NShards]int
 
 	for k, v := range sc.configs[newConfigNum-1].Groups {
 		ice := true
@@ -504,33 +490,20 @@ func (sc *ShardCtrler) ApplyLeave(gids []int) {
 
 	if len(newGroups) == 0 {
 		sc.configs = append(sc.configs, Config{
-			Num:    newConfigNum,
+			Num: newConfigNum,
 		})
 		return
 	}
 
-	i := 0
 	sortedGroups := []int{}
 	for k := range newGroups {
 		sortedGroups = append(sortedGroups, k)
 	}
 	sort.Ints(sortedGroups)
-	for {
-		for _, k := range sortedGroups {
-			newShards[i] = k
-			i++
-			if i >= 10 {
-				break
-			}
-		}
-		if i >= 10 {
-			break
-		}
-	}
 
 	sc.configs = append(sc.configs, Config{
 		Num:    newConfigNum,
-		Shards: newShards,
+		Shards: sc.AllocShard(sortedGroups, sc.configs[newConfigNum-1].Shards),
 		Groups: newGroups,
 	})
 	DEBUG(dError, "S%v [after leave]%v", sc.me, sc.configs[len(sc.configs)-1])
@@ -590,10 +563,111 @@ func (sc *ShardCtrler) Timer() {
 			Type:  "Timer",
 			Index: nrand(),
 		}
-		i,_,isleader := sc.rf.Start(operation)
+		i, _, isleader := sc.rf.Start(operation)
 		if isleader {
 		DEBUG(dTimer, "S%v add a Timer i:%v", sc.me, i)
 		}
 		time.Sleep(time.Second)
 	}
+}
+
+func (sc *ShardCtrler) AllocShard(group []int, preShards [NShards]int) [NShards]int {
+	groupNum := len(group)
+	min := NShards / groupNum
+	remain := NShards % groupNum
+
+	//judge gid is exist to add -1 to shard
+	for k, v := range preShards {
+		isExist := false
+		for _, gid := range group {
+			if gid == v {
+				isExist = true
+				break
+			}
+		}
+		if !isExist {
+			preShards[k] = -1
+		}
+	}
+
+	//sort shards to gid
+	newShards := make(map[int][]int)
+	for k, v := range preShards {
+		if v == -1 {
+			continue
+		}
+		if _, ok := newShards[v]; ok {
+			newShards[v] = append(newShards[v], k)
+		} else {
+			array := [...]int{k}
+			newShards[v] = array[:]
+		}
+	}
+	for _, v := range group {
+		if _, ok := newShards[v]; !ok {
+			var array []int
+			newShards[v] = array
+		}
+	}
+
+	sortedGroups := []int{}
+	for k := range newShards {
+		sortedGroups = append(sortedGroups, k)
+	}
+	sort.Ints(sortedGroups)
+	//judge more than min/min+1 to cut
+	for _, gid := range sortedGroups {
+		if remain > 0 {
+			if len(newShards[gid]) > min+1 {
+				remain--
+				release := newShards[gid][min+1:]
+				for _, v := range release {
+					preShards[v] = -1
+				}
+				newShards[gid] = newShards[gid][0 : min+1]
+			}
+		} else {
+			if len(newShards[gid]) > min {
+				release := newShards[gid][min:]
+				for _, v := range release {
+					preShards[v] = -1
+				}
+				newShards[gid] = newShards[gid][0:min]
+			}
+		}
+	}
+
+	//alloc remaining part
+	for _, gid := range sortedGroups {
+		if remain > 0 {
+			if num := min + 1 - len(newShards[gid]); num > 0 {
+				remain--
+				for shardNum, nogid := range preShards {
+					if nogid == -1 && num > 0{
+						newShards[gid] = append(newShards[gid], shardNum)
+						preShards[shardNum] = gid
+						num--
+					}
+				}
+			}
+		} else {
+			if num := min - len(newShards[gid]); num > 0 {
+				for shardNum, nogid := range preShards {
+					if nogid == -1 && num > 0 {
+						newShards[gid] = append(newShards[gid], shardNum)
+						preShards[shardNum] = gid
+						num--
+					}
+				}
+			}
+		}
+
+	}
+
+	for _, v := range preShards {
+		if v == -1 {
+			panic(preShards)
+		}
+	}
+	return preShards
 }
