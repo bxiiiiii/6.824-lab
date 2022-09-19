@@ -51,20 +51,19 @@ type GetReply struct {
 
 type RequireShardArgs struct {
 	Index     int64
-	ShardNum  int
+	ShardsNum  []int
 	ConfigNum int
 }
 
 type RequireShardReply struct {
 	Err   Err
-	Shard Shard
+	Shards []Shard
 }
 
 type AppendShardArgs struct {
 	Index     int64
 	Shards    map[int]Shard
 	CurConfig shardctrler.Config
-	PreConfig shardctrler.Config
 }
 
 type AppendShardReply struct {
