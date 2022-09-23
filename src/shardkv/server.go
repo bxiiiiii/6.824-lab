@@ -478,16 +478,20 @@ func (kv *ShardKV) HandleRequireShard(args *RequireShardArgs, reply *RequireShar
 			if kv.LastConfig.Num > args.ConfigNum {
 				DEBUG(dCommit, "S%v[shardkv][gid:%v] dddRequireShard is failed, conNum:m-o:%v-%v", kv.me, kv.gid, kv.LastConfig.Num, args.ConfigNum)
 				reply.Err = ErrorConfigOutOfDate
+				if kv.rqShardRecord[v].Receiver == args.Sender && kv.rqShardRecord[v].ConfigNum == args.ConfigNum {
+					replyShard := Shard{
+						ShardNum: v,
+						Storage:  make(map[string]string),
+						RqRecord: make(map[int64]RequestInfo),
+						Status:   kv.shards[v].Status,
+					}
+					replyShard.Storage = kv.shards[v].Storage
+					replyShard.RqRecord = kv.shards[v].RqRecord
+					DEBUG(dInfo, "S%v [shardkv][gid:%v] require again sucess %v %v", kv.me, kv.gid, args.Sender, kv.rqShardRecord)
+					replyShard.Status = "Working"
+				}
 				kv.mu.Unlock()
 				return
-			} else if kv.LastConfig.Num == args.ConfigNum {
-				// if !kv.isWorking {
-				// 	DEBUG(dCommit, "S%v[shardkv][gid:%v] not changed ,RequireShard is failed, conNum:m-o:%v-%v", kv.me, kv.gid, kv.LastConfig.Num, args.ConfigNum)
-				// 	reply.Err = ErrorTimeDeny
-				// 	delete(kv.rqRecord, args.Index)
-				// 	kv.mu.Unlock()
-				// 	return
-				// }
 			}
 
 			if _, ok := kv.shards[v]; !ok {
@@ -721,7 +725,7 @@ func (kv *ShardKV) Apply() {
 			}
 			kv.mu.Lock()
 			op := (entry.Command).(Op)
-			DEBUG(dClient, "S%v[shardkv][gid:%v] apply receive [%v]%v", kv.me, kv.gid, entry.CommandIndex, op)
+			// DEBUG(dClient, "S%v[shardkv][gid:%v] apply receive [%v]%v", kv.me, kv.gid, entry.CommandIndex, op)
 			switch op.Type {
 			case "Put":
 				for kv.shards[op.ShardNum].Status != "Working" {
@@ -805,7 +809,7 @@ func (kv *ShardKV) Apply() {
 					Status:  Completed,
 					Rqindex: entry.CommandIndex,
 				}
-				DEBUG(dLog, "S%v[shardkv][gid:%v]%v %v", kv.me, kv.gid, op.Type, kv.shards)
+				// DEBUG(dLog, "S%v[shardkv][gid:%v]%v %v", kv.me, kv.gid, op.Type, kv.shards)
 			case "LeaderTimer", "Timer", "ConfigChange", "RequireShard", "AppendShard", "UpdateShard":
 				kv.rqRecord[op.Index] = RequestInfo{
 					Status:  Completed,
@@ -816,7 +820,7 @@ func (kv *ShardKV) Apply() {
 			// DEBUG(dError, "S%v[shardkv][gid:%v] after apply [%v]", kv.me, kv.gid, kv.rqRecord)
 			kv.applyIndex = entry.CommandIndex
 			if op.Type != "Timer" {
-				DEBUG(dError, "S%v[shardkv][gid:%v] after apply [%v]", kv.me, kv.gid, kv.shards)
+				// DEBUG(dError, "S%v[shardkv][gid:%v] after apply [%v]", kv.me, kv.gid, kv.shards)
 			}
 			kv.mu.Unlock()
 			kv.cond.Broadcast()
