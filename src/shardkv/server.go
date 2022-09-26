@@ -349,6 +349,7 @@ func (kv *ShardKV) HandleRequireShard(args *RequireShardArgs, reply *RequireShar
 	}
 	// DEBUG(dLog, "S%v[shardkv][gid:%v] handle rq %v", kv.me, kv.gid, args.ShardsNum)
 	if kv.LastConfig.Num > args.ConfigNum {
+		DEBUG(dError, "S%v [shardkv][gid:%v] handle rq outofdate from lower config:%v %v", kv.me, kv.gid, args, kv.rqShardRecord)
 		if args.Sender == kv.rqShardRecord[args.ShardsNum[0]].Receiver && args.ConfigNum == kv.rqShardRecord[args.ShardsNum[0]].ConfigNum {
 			for _, v := range args.ShardsNum {
 				reply.Err = OK
@@ -512,6 +513,7 @@ func (kv *ShardKV) HandleRequireShard(args *RequireShardArgs, reply *RequireShar
 					}
 					reply.Shards = append(reply.Shards, shard)
 				} else if kv.shards[v].Status == "OutOfDate" {
+					DEBUG(dError, "S%v [shardkv][gid:%v] handle rq outofdate %v %v", kv.me, kv.gid, v, kv.rqShardRecord)
 					replyShard := Shard{
 						ShardNum: v,
 						Storage:  make(map[string]string),
@@ -920,12 +922,17 @@ func (kv *ShardKV) ApplyConfigChange(lastConfig shardctrler.Config) {
 	DEBUG(dError, "S%v [shardkv][gid:%v] -pre-cur:%v-%v", kv.me, kv.gid, kv.LastConfig, kv.curConfig)
 	// kv.preConfig, kv.curConfig = kv.curConfig, lastConfig
 	// kv.curConfig = lastConfig
-	// DEBUG(dError, "S%v [shardkv][gid:%v] pre-cur:%v-%v", kv.me, kv.gid, kv.LastConfig, kv.curConfig)
 	if kv.curConfig.Num != kv.LastConfig.Num-1 {
-		kv.preConfig = kv.mck.Query(kv.LastConfig.Num - 1)
+		preConfig := kv.mck.Query(kv.LastConfig.Num - 1)
+		for preConfig.Num != kv.LastConfig.Num-1 {
+			DEBUG(dError, "S%v [shardkv][gid:%v] query failed.", kv.me, kv.gid)
+			preConfig = kv.mck.Query(kv.LastConfig.Num - 1)
+		}
+		kv.preConfig = preConfig
 	} else {
 		kv.preConfig = kv.curConfig
 	}
+	DEBUG(dError, "S%v [shardkv][gid:%v] pre:%v", kv.me, kv.gid, kv.preConfig)
 	var Curneed2Control []int
 	need2Require2gid := make(map[int][]int)
 	var need2Require []int
@@ -1043,34 +1050,34 @@ func (kv *ShardKV) ApplyConfigChange(lastConfig shardctrler.Config) {
 
 	DEBUG(dLeader, "S%v [shardkv][gid:%v] -----%v", kv.me, kv.gid, need2Require2gid)
 	for k, v := range need2Require2gid {
-		if k == kv.gid {
+		// if k == kv.gid {
 
-			for _, shardNum := range v {
-				Config := kv.preConfig
-				for {
-					Config = kv.mck.Query(Config.Num - 1)
-					if Config.Num == 0 {
-						kv.temShards[shardNum] = Shard{
-							ShardNum: kv.temShards[shardNum].ShardNum,
-							Storage:  kv.temShards[shardNum].Storage,
-							RqRecord: kv.temShards[shardNum].RqRecord,
-							Status:   "Working",
-						}
-						break
-					}
-					if Config.Shards[shardNum] == kv.gid {
-						continue
-					} else {
-						DEBUG(dLeader, "S%v [shardkv][gid:%v] +++++%v %v", kv.me, kv.gid, shardNum, Config)
-						go kv.RequireShard(Config.Shards[shardNum], []int{shardNum}, Config)
-						break
-					}
-				}
+		// 	for _, shardNum := range v {
+		// 		Config := kv.preConfig
+		// 		for {
+		// 			Config = kv.mck.Query(Config.Num - 1)
+		// 			if Config.Num == 0 {
+		// 				kv.temShards[shardNum] = Shard{
+		// 					ShardNum: kv.temShards[shardNum].ShardNum,
+		// 					Storage:  kv.temShards[shardNum].Storage,
+		// 					RqRecord: kv.temShards[shardNum].RqRecord,
+		// 					Status:   "Working",
+		// 				}
+		// 				break
+		// 			}
+		// 			if Config.Shards[shardNum] == kv.gid {
+		// 				continue
+		// 			} else {
+		// 				DEBUG(dLeader, "S%v [shardkv][gid:%v] +++++%v %v", kv.me, kv.gid, shardNum, Config)
+		// 				go kv.RequireShard(Config.Shards[shardNum], []int{shardNum}, Config)
+		// 				break
+		// 			}
+		// 		}
 
-			}
-		} else {
-			go kv.RequireShard(k, v, kv.preConfig)
-		}
+		// 	}
+		// } else {
+		go kv.RequireShard(k, v, kv.preConfig)
+		// }
 
 	}
 	go func() {
@@ -1124,6 +1131,11 @@ func (kv *ShardKV) RequireShard(gid int, shardsNum []int, config shardctrler.Con
 				DEBUG(dLog, "S%v [shardkv][gid:%v] require to self %v sucess", kv.me, kv.gid, v)
 			} else {
 				preConfig := kv.mck.Query(preConfig.Num - 1)
+				for preConfig.Num != config.Num-1 {
+					DEBUG(dError, "S%v [shardkv][gid:%v] query failed.", kv.me, kv.gid)
+					preConfig = kv.mck.Query(config.Num - 1)
+				}
+				DEBUG(dError, "S%v [shardkv][gid:%v] pre-%v", kv.me, kv.gid, preConfig)
 				go kv.RequireShard(preConfig.Shards[v], []int{v}, preConfig)
 			}
 		}
@@ -1156,7 +1168,14 @@ func (kv *ShardKV) RequireShard(gid int, shardsNum []int, config shardctrler.Con
 					kv.mu.Lock()
 					for _, v := range reply.Shards {
 						if v.Status == "NotExist" || v.Status == "OutOfDate" || v.Status == "WaitForAdd" {
+							// preConfig := kv.mck.Query(preConfig.Num - 1)
 							preConfig := kv.mck.Query(preConfig.Num - 1)
+							for preConfig.Num != config.Num-1 {
+								DEBUG(dError, "S%v [shardkv][gid:%v] query failed.", kv.me, kv.gid)
+								preConfig = kv.mck.Query(config.Num - 1)
+							}
+
+							DEBUG(dError, "S%v [shardkv][gid:%v] pre:%v", kv.me, kv.gid, preConfig)
 							if preConfig.Num == 0 {
 								shard := Shard{
 									ShardNum: v.ShardNum,
@@ -1190,11 +1209,16 @@ func (kv *ShardKV) RequireShard(gid int, shardsNum []int, config shardctrler.Con
 
 					return
 				} else {
+					DEBUG(dError, "S%v [shardkv][gid:%v] rq shard rpc failed. send to %v %v %v", kv.me, kv.gid, gid, shardsNum, reply.Err)
 					if reply.Err == ErrorConfigOutOfDate {
 						kv.mu.Lock()
 						for _, v := range shardsNum {
 							if kv.shards[v].Status == "Deleting" {
 								preConfig := kv.mck.Query(preConfig.Num - 1)
+								for preConfig.Num != config.Num-1 {
+									DEBUG(dError, "S%v [shardkv][gid:%v] query failed.", kv.me, kv.gid)
+									preConfig = kv.mck.Query(config.Num - 1)
+								}
 								if preConfig.Num == 0 {
 									shard := Shard{
 										ShardNum: v,
