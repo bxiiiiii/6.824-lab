@@ -34,6 +34,8 @@ type Op struct {
 
 	Receiver  int
 	ConfigNum int
+
+	Rq [shardctrler.NShards]rqShardInfo
 }
 
 const (
@@ -382,67 +384,6 @@ func (kv *ShardKV) HandleRequireShard(args *RequireShardArgs, reply *RequireShar
 		kv.mu.Unlock()
 		return
 	}
-	// DEBUG(dClient, "S%v[shardkv][gid:%v] RequireShard %v", )
-	// for k, v := range kv.rqRecord {
-	// 	if k == args.Index {
-	// 		if v.Status == Completed {
-	// 			DEBUG(dCommit, "S%v[shardkv][gid:%v] RequireShard is ok %v", kv.me, kv.gid, args.Index)
-	// 			reply.Err = OK
-	// 			for _, v := range args.ShardsNum {
-	// 				shard := Shard{
-	// 					ShardNum: kv.shards[v].ShardNum,
-	// 					Storage:  make(map[string]string),
-	// 					RqRecord: make(map[int64]RequestInfo),
-	// 					Status:   "Working",
-	// 				}
-	// 				if _, ok := kv.shards[v]; ok {
-	// 					if kv.shards[v].Status == "OutOfDate" {
-	// 						shard.Storage = kv.shards[v].Storage
-	// 						shard.RqRecord = kv.shards[v].RqRecord
-	// 						shard.Status = "Working"
-	// 					} else {
-	// 						shard.ShardNum = kv.shards[v].ShardNum
-	// 						shard.Status = "NotExist"
-	// 					}
-	// 				} else {
-	// 					shard.ShardNum = v
-	// 					shard.Status = "NotExist"
-	// 				}
-	// 				reply.Shards = append(reply.Shards, shard)
-	// 			}
-	// 			if
-	// 		} else if v.Status == InProgress {
-	// 			DEBUG(dDrop, "S%v[shardkv][gid:%v] RequireShard %v is waiting", kv.me, kv.gid, args.Index)
-	// 			for kv.rqRecord[args.Index].Status == InProgress {
-	// 				kv.cond.Wait()
-	// 			}
-	// 			if kv.rqRecord[args.Index].Status == Completed {
-	// 				DEBUG(dCommit, "S%v[shardkv][gid:%v] RequireShard %v is ok", kv.me, kv.gid, args.Index)
-	// 				reply.Err = OK
-	// 				for _, v := range args.ShardsNum {
-	// 					shard := Shard{
-	// 						ShardNum: kv.shards[v].ShardNum,
-	// 						Storage:  make(map[string]string),
-	// 						RqRecord: make(map[int64]RequestInfo),
-	// 						Status:   "Working",
-	// 					}
-	// 					shard.Storage = kv.shards[v].Storage
-	// 					shard.RqRecord = kv.shards[v].RqRecord
-	// 					reply.Shards = append(reply.Shards, shard)
-	// 				}
-	// 			} else if kv.rqRecord[args.Index].Status == ErrorOccurred {
-	// 				DEBUG(dCommit, "S%v[shardkv][gid:%v] RequireShard %v is failed", kv.me, kv.gid, args.Index)
-	// 				// delete(kv.record, args.Index)
-	// 				reply.Err = ErrorOccurred
-	// 			}
-	// 		} else if v.Status == ErrorTimeDeny {
-	// 			break
-	// 		}
-	// 		DEBUG(dInfo, "S%v [shardkv][gid:%v] handle same rq %v %v %v", kv.me, kv.gid, args.Index, args.ShardsNum, reply)
-	// 		kv.mu.Unlock()
-	// 		return
-	// 	}
-	// }
 
 	operation := Op{
 		Type:      "RequireShard",
@@ -479,7 +420,9 @@ func (kv *ShardKV) HandleRequireShard(args *RequireShardArgs, reply *RequireShar
 			if kv.LastConfig.Num > args.ConfigNum {
 				DEBUG(dCommit, "S%v[shardkv][gid:%v] dddRequireShard is failed, conNum:m-o:%v-%v", kv.me, kv.gid, kv.LastConfig.Num, args.ConfigNum)
 				reply.Err = ErrorConfigOutOfDate
+				reply.ConfigNum = kv.LastConfig.Num
 				if kv.rqShardRecord[v].Receiver == args.Sender && kv.rqShardRecord[v].ConfigNum == args.ConfigNum {
+					reply.Err = OK
 					replyShard := Shard{
 						ShardNum: v,
 						Storage:  make(map[string]string),
@@ -759,6 +702,7 @@ func (kv *ShardKV) Apply() {
 			case "ConfigChange":
 				if kv.LastConfig.Num < op.Config.Num {
 					kv.LastConfig = op.Config
+					kv.isWorking = false
 				}
 				if kv.curConfig.Num < op.Config.Num {
 					kv.ApplyConfigChange(op.Config)
@@ -800,8 +744,20 @@ func (kv *ShardKV) Apply() {
 					shard.Storage = v.Storage
 					shard.RqRecord = v.RqRecord
 					kv.shards[k] = shard
-					kv.rqShardRecord[k].Receiver = op.Receiver
-					kv.rqShardRecord[k].ConfigNum = op.ConfigNum
+					// kv.rqShardRecord[k].Receiver = op.Receiver
+					// kv.rqShardRecord[k].ConfigNum = op.ConfigNum
+					kv.rqShardRecord = op.Rq
+					for k, v := range op.Rq {
+						if v.Receiver != 0 && v.Receiver != -1 && kv.shards[k].Status != "OutOfDate"{
+							shard := Shard{
+								ShardNum: kv.shards[k].ShardNum,
+								Storage: kv.shards[k].Storage,
+								RqRecord: kv.shards[k].RqRecord,
+								Status: "OutOfDate",
+							}
+							kv.shards[k] = shard
+						}
+					}
 				}
 			}
 
@@ -1120,7 +1076,7 @@ func (kv *ShardKV) RequireShard(gid int, shardsNum []int, config shardctrler.Con
 	preConfig := config
 	if gid == kv.gid {
 		for _, v := range shardsNum {
-			if kv.shards[v].Status == "Deleting" {
+			if kv.shards[v].Status == "Deleting" && (kv.rqShardRecord[v].Receiver == -1 || kv.rqShardRecord[v].Receiver == 0) {
 				shard := Shard{
 					ShardNum: v,
 					Storage:  kv.shards[v].Storage,
@@ -1341,6 +1297,7 @@ func (kv *ShardKV) UpdateShard(shardNum []int, sender int, configNum int) {
 		CurConfig: args.CurConfig,
 		Receiver:  sender,
 		ConfigNum: configNum,
+		Rq:        kv.rqShardRecord,
 	}
 	kv.rf.Start(operation)
 	kv.mu.Unlock()
