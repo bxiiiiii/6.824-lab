@@ -295,7 +295,7 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 				case Completed:
 					DEBUG(dCommit, "S%v query %v is ok", sc.me, args.Index)
 					reply.Err = OK
-					if args.Num == -1 && args.Num >= len(sc.configs) {
+					if args.Num == -1 || args.Num >= len(sc.configs) {
 						reply.Config = sc.configs[len(sc.configs)-1]
 					} else {
 						reply.Config = sc.configs[args.Num]
