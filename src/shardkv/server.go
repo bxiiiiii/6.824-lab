@@ -9,7 +9,7 @@ import (
 	"6.824/labrpc"
 	"6.824/raft"
 	"6.824/shardctrler"
-	// sync "github.com/sasha-s/go-deadlock"
+	sync "github.com/sasha-s/go-deadlock"
 )
 
 type Op struct {
@@ -47,7 +47,7 @@ const (
 )
 
 type ShardKV struct {
-	mu           dsync.Mutex
+	mu           sync.Mutex
 	me           int
 	rf           *raft.Raft
 	applyCh      chan raft.ApplyMsg
@@ -80,6 +80,7 @@ type ShardKV struct {
 	isDead    bool
 	isChanged bool
 	temConfig shardctrler.Config
+	istem     bool
 }
 
 type RequestInfo struct {
@@ -102,6 +103,10 @@ type rqShardInfo struct {
 
 func (kv *ShardKV) GetConfig() {
 	for {
+		if kv.killed() {
+			// kv.mu.Unlock()
+			return
+		}
 		kv.mu.Lock()
 		if _, ok := kv.rqRecord[kv.startTimer]; !ok {
 			// DEBUG(dPersist, "S%v[shardkv][gid:%v] get deny %v", kv.me, kv.gid, args.Index)
@@ -109,7 +114,9 @@ func (kv *ShardKV) GetConfig() {
 			time.Sleep(time.Millisecond * 100)
 			continue
 		}
+		kv.mu.Unlock()
 		lastConfig := kv.mck.Query(-1)
+		kv.mu.Lock()
 		// kv.mu.Lock()
 		ice := true
 		// if kv.LastConfig.Num != 0 {
@@ -267,7 +274,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 	if kv.shards[args.ShardNum].Status != "Working" {
-		// DEBUG(dLog, "S%v[shardkv][gid:%v] p/a not ready %v %v %v", kv.me, kv.gid, kv.shards[args.ShardNum].Status, args.ShardNum, args.Index)
+		DEBUG(dLog, "S%v[shardkv][gid:%v] p/a not ready %v %v %v", kv.me, kv.gid, kv.shards[args.ShardNum].Status, args.ShardNum, args.Index)
 		reply.Err = ErrorTimeDeny
 		kv.mu.Unlock()
 		return
@@ -488,19 +495,6 @@ func (kv *ShardKV) HandleRequireShard(args *RequireShardArgs, reply *RequireShar
 					replyShard.Storage = kv.shards[v].Storage
 					replyShard.RqRecord = kv.shards[v].RqRecord
 					reply.Shards = append(reply.Shards, replyShard)
-
-					// shard := Shard{
-					// 	ShardNum: v,
-					// 	Storage:  kv.shards[v].Storage,
-					// 	RqRecord: kv.shards[v].RqRecord,
-					// 	Status:   "OutOfDate",
-					// }
-					// kv.shards[v] = shard
-					// needAppend = append(needAppend, v)
-					// kv.rqShardRecord[v] = rqShardInfo{
-					// 	Receiver:  args.Sender,
-					// 	ConfigNum: args.ConfigNum,
-					// }
 				}
 				DEBUG(dLog2, "S%v[shardkv][gid:%v] rqShard: %v", kv.me, kv.gid, kv.rqShardRecord)
 			}
@@ -511,7 +505,7 @@ func (kv *ShardKV) HandleRequireShard(args *RequireShardArgs, reply *RequireShar
 		DEBUG(dInfo, "S%v[shardkv][gid:%v] RequireShard %v is ok", kv.me, kv.gid, i)
 	}
 	kv.mu.Unlock()
-	DEBUG(dLeader, "S%v[shardkv][gid:%v] RequireShard reply:%v", kv.me, kv.gid, reply)
+	DEBUG(dLeader, "S%v[shardkv][gid:%v] RequireShard reply:%v %v", kv.me, kv.gid, kv.shards[args.ShardsNum[0]].Status,reply)
 }
 
 func (kv *ShardKV) HandleAppendShard(args *AppendShardArgs, reply *AppendShardReply) {
@@ -608,7 +602,10 @@ func (kv *ShardKV) Kill() {
 }
 
 func (kv *ShardKV) killed() bool {
-	return kv.isDead
+	kv.mu.Lock()
+	dead := kv.isDead
+	kv.mu.Unlock()
+	return dead
 }
 
 //
@@ -666,10 +663,11 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.applyIndex = 0
 	kv.isWorking = true
 	kv.isChanged = true
+	kv.isDead = false
 	for i := 0; i < shardctrler.NShards; i++ {
 		kv.rqShardRecord[i].Receiver = -1
 	}
-	// sync.Opts.DeadlockTimeout = time.Second
+	sync.Opts.DeadlockTimeout = time.Second*3
 	LOGinit()
 	DEBUG(dInfo, "S%v[shardkv][gid:%v] Started", kv.me, kv.gid)
 	go kv.Timer()
@@ -720,7 +718,7 @@ func (kv *ShardKV) Apply() {
 			case "ConfigChange":
 				DEBUG(dLog, "S%v[shardkv][gid:%v] apply new config: %v %v %v %v", kv.me, kv.gid, op.Config.Num, kv.LastConfig.Num, kv.curConfig.Num, kv.isChanged)
 				// if kv.LastConfig.Num <= op.Config.Num && kv.isChanged {
-				if kv.LastConfig.Num <= op.Config.Num {
+				if (kv.LastConfig.Num <= op.Config.Num) && kv.isChanged {
 					kv.LastConfig = op.Config
 					kv.isWorking = false
 					kv.isChanged = false
@@ -764,10 +762,11 @@ func (kv *ShardKV) Apply() {
 							shard.Storage = op.Shards[k].Storage
 							shard.RqRecord = op.Shards[k].RqRecord
 							kv.shards[k] = shard
+							kv.rqShardRecord[k].Receiver = -1
 						}
 					}
-					DEBUG(dClient, "S%v[shardkv][gid:%v] after apply append: %v", kv.me, kv.gid, op.CurConfig)
-					DEBUG(dClient, "S%v[shardkv][gid:%v] after apply append: %v", kv.me, kv.gid, kv.shards)
+					// DEBUG(dClient, "S%v[shardkv][gid:%v] after apply append: %v", kv.me, kv.gid, op.CurConfig)
+					// DEBUG(dClient, "S%v[shardkv][gid:%v] after apply append: %v", kv.me, kv.gid, kv.shards)
 				}
 			case "UpdateShard":
 				for k, v := range op.Shards {
@@ -796,6 +795,7 @@ func (kv *ShardKV) Apply() {
 					// }
 				}
 			case "RequireShard":
+				DEBUG(dError, "S%v[shardkv][gid:%v] before apply rqs %v %v %v %v", kv.me, kv.gid, kv.LastConfig.Num, op.ConfigNum, kv.shards[op.ShardsNum[0]].Status, kv.rqShardRecord[op.ShardsNum[0]].Receiver)
 				if kv.LastConfig.Num <= op.ConfigNum {
 					if _, ok := kv.shards[op.ShardsNum[0]]; ok {
 						if kv.shards[op.ShardsNum[0]].Status != "Failed" && kv.shards[op.ShardsNum[0]].Status != "OutOfDate" && kv.rqShardRecord[op.ShardsNum[0]].Receiver == -1 {
@@ -809,7 +809,7 @@ func (kv *ShardKV) Apply() {
 							kv.temShards[op.ShardsNum[0]] = shard
 							kv.rqShardRecord[op.ShardsNum[0]].Receiver = op.Receiver
 							kv.rqShardRecord[op.ShardsNum[0]].ConfigNum = op.ConfigNum
-							// DEBUG(dError, "S%v[shardkv][gid:%v] after apply rqs %v", kv.me, kv.gid, kv.shards)
+							DEBUG(dError, "S%v[shardkv][gid:%v] after apply rqs %v", kv.me, kv.gid, kv.shards[op.ShardsNum[0]].Status)
 						}
 					}
 				}
@@ -912,9 +912,9 @@ func (kv *ShardKV) ApplyConfigChange(lastConfig shardctrler.Config) {
 		return
 	}
 	if _, ok := kv.rqRecord[kv.startTimer]; !ok {
-		kv.curConfig.Num = kv.LastConfig.Num
-		// kv.temConfig = kv.LastConfig
-		// kv.isChanged = true
+		// kv.curConfig.Num = kv.LastConfig.Num
+		kv.temConfig = lastConfig
+		kv.istem = true
 		return
 	}
 	kv.isWorking = false
@@ -939,10 +939,14 @@ func (kv *ShardKV) ApplyConfigChange(lastConfig shardctrler.Config) {
 	// kv.preConfig, kv.curConfig = kv.curConfig, lastConfig
 	// kv.curConfig = lastConfig
 	if kv.curConfig.Num != kv.LastConfig.Num-1 {
+		kv.mu.Unlock()
 		preConfig := kv.mck.Query(kv.LastConfig.Num - 1)
+		kv.mu.Lock()
 		for preConfig.Num != kv.LastConfig.Num-1 {
 			DEBUG(dError, "S%v [shardkv][gid:%v] query failed.", kv.me, kv.gid)
+			kv.mu.Unlock()
 			preConfig = kv.mck.Query(kv.LastConfig.Num - 1)
+			kv.mu.Lock()
 		}
 		kv.preConfig = preConfig
 	} else {
@@ -1089,7 +1093,7 @@ func (kv *ShardKV) ApplyConfigChange(lastConfig shardctrler.Config) {
 				for kv.temShards[shardNum].Status != "Working" && kv.temShards[shardNum].Status != "WorkingWaitForAdd" && kv.temShards[shardNum].Status != "Failed" {
 					DEBUG(dLog2, "S%v [shardkv][gid:%v] wait requireShard %v %v ", kv.me, kv.gid, shardNum, kv.temShards[shardNum].Status)
 					for k, v := range kv.temShards {
-						DEBUG(dLog, "S%v [shardkv][gid:%v] temStatus: %v %v", kv.me, kv.gid, k, v.Status)
+						DEBUG(dLog, "S%v [shardkv][gid:%v] temStatus: %v %v %v", kv.me, kv.gid, k, v.Status, kv.shards[k].Status)
 					}
 					kv.cond.Wait()
 				}
@@ -1144,10 +1148,14 @@ func (kv *ShardKV) RequireShard(gid int, shardsNum []int, config shardctrler.Con
 				kv.temShards[v] = shard
 				DEBUG(dLog, "S%v [shardkv][gid:%v] require to self %v sucess", kv.me, kv.gid, v)
 			} else {
+				kv.mu.Unlock()
 				preConfig := kv.mck.Query(preConfig.Num - 1)
+				kv.mu.Lock()
 				for preConfig.Num != config.Num-1 {
 					DEBUG(dError, "S%v [shardkv][gid:%v] query failed.", kv.me, kv.gid)
+					kv.mu.Unlock()
 					preConfig = kv.mck.Query(config.Num - 1)
+					kv.mu.Lock()
 				}
 				DEBUG(dError, "S%v [shardkv][gid:%v] pre-%v", kv.me, kv.gid, preConfig)
 				if preConfig.Num == 0 {
@@ -1193,10 +1201,14 @@ func (kv *ShardKV) RequireShard(gid int, shardsNum []int, config shardctrler.Con
 					for _, v := range reply.Shards {
 						if v.Status == "NotExist" || v.Status == "OutOfDate" || v.Status == "WaitForAdd" {
 							// preConfig := kv.mck.Query(preConfig.Num - 1)
+							kv.mu.Unlock()
 							preConfig := kv.mck.Query(preConfig.Num - 1)
+							kv.mu.Lock()
 							for preConfig.Num != config.Num-1 {
 								DEBUG(dError, "S%v [shardkv][gid:%v] query failed.", kv.me, kv.gid)
+								kv.mu.Unlock()
 								preConfig = kv.mck.Query(config.Num - 1)
+								kv.mu.Lock()
 							}
 
 							DEBUG(dError, "S%v [shardkv][gid:%v] pre:%v", kv.me, kv.gid, preConfig)
@@ -1386,6 +1398,7 @@ func (kv *ShardKV) CallAppendShard(srv *labrpc.ClientEnd, args *AppendShardArgs,
 func (kv *ShardKV) Timer() {
 	for {
 		if kv.killed() {
+			// kv.mu.Unlock()
 			return
 		}
 		kv.mu.Lock()
@@ -1411,6 +1424,7 @@ func (kv *ShardKV) Timer() {
 	}
 	for {
 		if kv.killed() {
+			// kv.mu.Unlock()
 			return
 		}
 		operation := Op{
@@ -1431,21 +1445,41 @@ func (kv *ShardKV) Timer() {
 			}
 		}
 		// if kv.curConfig.Num < kv.temConfig.Num {
-		if !kv.isWorking && kv.LastConfig.Num == kv.curConfig.Num {
-			operation := Op{
-				Type:   "ConfigChange",
-				Index:  nrand(),
-				Config: kv.LastConfig,
-			}
-			i, _, isLeader := kv.rf.Start(operation)
-			if isLeader {
-				kv.isWorking = false
-				DEBUG(dWarn, "S%v [shardkv][gid:%v] !miss config %v %v", kv.me, kv.gid, i, kv.LastConfig)
+		// if !kv.isWorking && kv.LastConfig.Num == kv.curConfig.Num {
+		if kv.istem {
+			if kv.curConfig.Num < kv.LastConfig.Num {
+				operation := Op{
+					Type:   "ConfigChange",
+					Index:  nrand(),
+					Config: kv.LastConfig,
+				}
+				i, _, isLeader := kv.rf.Start(operation)
+				if isLeader {
+					kv.isChanged = true
+					kv.istem = false
+					DEBUG(dWarn, "S%v [shardkv][gid:%v] !miss config %v %v", kv.me, kv.gid, i, kv.LastConfig)
+				}
+			} else {
+				kv.istem = false
 			}
 		}
+
+		// if !kv.isWorking {
+		// 	operation := Op{
+		// 		Type:   "ConfigChange",
+		// 		Index:  nrand(),
+		// 		Config: kv.LastConfig,
+		// 	}
+		// 	_, _, isLeader := kv.rf.Start(operation)
+		// 	if isLeader {
+		// 		kv.isChanged = true
+		// 		// kv.istem = false
+		// 		// DEBUG(dWarn, "S%v [shardkv][gid:%v] !!miss config %v %v", kv.me, kv.gid, i, kv.LastConfig)
+		// 	}
+		// }
 		i, _, isleader := kv.rf.Start(operation)
 		if isleader {
-			DEBUG(dTimer, "S%v[shardkv][gid:%v] add a Timer i:%v isworking:%v last:%v cur:%v", kv.me, kv.gid, i, kv.isWorking, kv.LastConfig.Num, kv.curConfig.Num)
+			DEBUG(dTimer, "S%v[shardkv][gid:%v] add a Timer i:%v isworking:%v isChanged:%v last:%v cur:%v", kv.me, kv.gid, i, kv.isWorking, kv.isChanged, kv.LastConfig.Num, kv.curConfig.Num)
 		}
 		kv.mu.Unlock()
 		time.Sleep(time.Second)
@@ -1457,11 +1491,11 @@ func (kv *ShardKV) Snap() {
 		return
 	}
 	for {
-		kv.mu.Lock()
 		if kv.killed() {
+			// kv.mu.Unlock()
 			return
 		}
-
+		kv.mu.Lock()
 		if kv.applyIndex > kv.snapshotIndex && kv.rf.Persister.RaftStateSize() >= kv.maxraftstate {
 			// DEBUG(dDrop, "S%v[shardkv][gid:%v] snap %v", kv.me, kv.gid, kv.applyIndex)
 			w := new(bytes.Buffer)
