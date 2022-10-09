@@ -360,17 +360,24 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if _, ok := kv.rqRecord[args.Index]; ok {
 		DEBUG(dCommit, "S%v[shardkv][gid:%v] p/a %v is %v", kv.me, kv.gid, args.Index, kv.rqRecord[args.Index])
 		if kv.rqRecord[args.Index].Status == Completed {
-			reply.Err = OK
+			reply.Err = ErrorOccurred
+			delete(kv.rqRecord, args.Index)
 			DEBUG(dCommit, "S%v[shardkv][gid:%v] p/a %v is o", kv.me, kv.gid, args.Index)
+			kv.mu.Unlock()
+			return
+		} else if kv.rqRecord[args.Index].Status == ErrorOccurred {
+			DEBUG(dCommit, "S%v[shardkv][gid:%v] p/a %v is o err", kv.me, kv.gid, args.Index)
+			reply.Err = ErrorOccurred
+			delete(kv.rqRecord, args.Index)
 			kv.mu.Unlock()
 			return
 		}
 		for kv.rqRecord[args.Index].Status == InProgress {
-			DEBUG(dDrop, "S%v[shardkv][gid:%v] p/a %v is waitin %v", kv.me, kv.gid, kv.rqRecord[args.Index].Rqindex)
+			DEBUG(dDrop, "S%v[shardkv][gid:%v] p/a %v is waitin %v %v", kv.me, kv.gid, kv.rqRecord[args.Index].Rqindex, args.Index)
 			kv.cond.Wait()
 
 			for k, v := range kv.rqRecord {
-				if v.Rqindex == kv.rqRecord[args.Index].Rqindex{
+				if v.Rqindex == kv.rqRecord[args.Index].Rqindex {
 					DEBUG(dDrop, "S%v[shardkv][gid:%v] p/a %v is waitingg %v %v", kv.me, kv.gid, k, v)
 				}
 				if v.Rqindex == kv.rqRecord[args.Index].Rqindex && k != args.Index && kv.rqRecord[args.Index].Status == Completed {
@@ -381,7 +388,9 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				}
 			}
 		}
-		reply.Err = OK
+		if kv.rqRecord[args.Index].Status == Completed {
+			reply.Err = OK
+		}
 		kv.mu.Unlock()
 		return
 	}
@@ -755,7 +764,7 @@ func (kv *ShardKV) Apply() {
 			}
 			kv.mu.Lock()
 			op := (entry.Command).(Op)
-			DEBUG(dClient, "S%v[shardkv][gid:%v] apply receive [%v]%v", kv.me, kv.gid, entry.CommandIndex, op.Type)
+			DEBUG(dClient, "S%v[shardkv][gid:%v] apply receive [%v]%v %v", kv.me, kv.gid, entry.CommandIndex, op.Type, op.Index)
 			switch op.Type {
 			case "Put":
 				for kv.shards[op.ShardNum].Status != "Working" {
@@ -881,11 +890,11 @@ func (kv *ShardKV) Apply() {
 				}
 			}
 
-			for k,v := range kv.rqRecord {
-				if entry.CommandIndex == v.Rqindex {
-					delete(kv.rqRecord,k)
-				}
-			}
+			// for k, v := range kv.rqRecord {
+			// 	if entry.CommandIndex == v.Rqindex {
+			// 		delete(kv.rqRecord, k)
+			// 	}
+			// }
 
 			switch op.Type {
 			case "Put", "Append", "Get":
@@ -1412,6 +1421,12 @@ func (kv *ShardKV) AppendShard() {
 		CurConfig: args.CurConfig,
 	}
 	kv.rf.Start(operation)
+	// i,_,isLeader := kv.rf.Start(operation)
+	// if isLeader {
+
+	// }
+	
+	//TODO: handle unreliable
 	kv.mu.Unlock()
 }
 
