@@ -50,14 +50,17 @@ type GetReply struct {
 }
 
 type RequireShardArgs struct {
-	Index     int64
-	ShardsNum  []int
-	ConfigNum int
+	Index       int64
+	ShardsNum   []int
+	ConfigNum   int
+	Sender      int
+	RqConfigNum int
 }
 
 type RequireShardReply struct {
-	Err   Err
-	Shards []Shard
+	Err       Err
+	Shards    []Shard
+	ConfigNum int
 }
 
 type AppendShardArgs struct {
