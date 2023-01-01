@@ -82,6 +82,8 @@ type ShardKV struct {
 	isChanged bool
 	temConfig shardctrler.Config
 	istem     bool
+
+	isSend bool
 }
 
 type RequestInfo struct {
@@ -464,6 +466,10 @@ func (kv *ShardKV) HandleRequireShard(args *RequireShardArgs, reply *RequireShar
 				DEBUG(dCommit, "S%v[shardkv][gid:%v] RequireShard is failed, conNum:m-o:%v-%v %v", kv.me, kv.gid, kv.LastConfig.Num, args.ConfigNum, args.ShardsNum)
 				reply.Err = ErrorConfigOutOfDate
 				reply.ConfigNum = kv.LastConfig.Num
+				// if kv.rqShardRecord[v].Receiver != args.Sender&&kv.sha{
+				// 	reply.Err = OK
+				// 	replyShard.Status = "NotExist"
+				// }
 			}
 			reply.Shards = append(reply.Shards, replyShard)
 		}
@@ -557,7 +563,7 @@ func (kv *ShardKV) HandleRequireShard(args *RequireShardArgs, reply *RequireShar
 					if kv.rqShardRecord[v].Receiver == args.Sender && kv.rqShardRecord[v].ConfigNum >= args.ConfigNum {
 						shard.Status = "Working"
 						shard.Storage = kv.shards[v].Storage
-						shard.RqRecord =kv.shards[v].RqRecord
+						shard.RqRecord = kv.shards[v].RqRecord
 					}
 					reply.Shards = append(reply.Shards, shard)
 				} else if kv.shards[v].Status == "OutOfDate" && kv.rqShardRecord[v].Receiver == args.Sender && kv.rqShardRecord[v].ConfigNum >= args.ConfigNum {
@@ -833,6 +839,7 @@ func (kv *ShardKV) Apply() {
 					// kv.shards = make(map[int]Shard)
 					kv.isWorking = true
 					kv.isChanged = true
+					kv.isSend = true
 					kv.curConfig = op.CurConfig
 					kv.LastConfig = op.CurConfig
 					kv.temConfig = op.Config
@@ -847,8 +854,8 @@ func (kv *ShardKV) Apply() {
 							shard.Storage = op.Shards[k].Storage
 							shard.RqRecord = op.Shards[k].RqRecord
 							kv.shards[k] = shard
-							if shard.Status == "Working"{
-							kv.rqShardRecord[k].Receiver = -1
+							if shard.Status == "Working" {
+								kv.rqShardRecord[k].Receiver = -1
 							}
 						}
 					}
@@ -948,7 +955,9 @@ func (kv *ShardKV) Apply() {
 			var isWorking bool
 			var isChanged bool
 			var istem bool
-			if d.Decode(&applyIndex) != nil || d.Decode(&shards) != nil || d.Decode(&rqRecord) != nil || d.Decode(&curConfig) != nil || d.Decode(&lastConfig) != nil || d.Decode(&rqShardRecord) != nil || d.Decode(&isWorking) != nil || d.Decode(&isChanged) != nil || d.Decode(&istem) != nil {
+			var isSend bool
+			temShards := make(map[int]Shard)
+			if d.Decode(&applyIndex) != nil || d.Decode(&shards) != nil || d.Decode(&rqRecord) != nil || d.Decode(&curConfig) != nil || d.Decode(&lastConfig) != nil || d.Decode(&rqShardRecord) != nil || d.Decode(&isWorking) != nil || d.Decode(&isChanged) != nil || d.Decode(&istem) != nil || d.Decode(&temShards) != nil || d.Decode(&isSend) != nil {
 				panic("decode fail")
 			} else {
 				DEBUG(dSnap, "S%v [shardkv][gid:%v] apply snap %v", kv.me, kv.gid, applyIndex)
@@ -988,9 +997,31 @@ func (kv *ShardKV) Apply() {
 				kv.isWorking = isWorking
 				kv.isChanged = isChanged
 				kv.istem = istem
+				kv.isSend = isSend
 				// if !kv.isWorking {
 
 				// }
+			}
+			if !kv.isSend {
+				kv.isWorking = true
+				kv.isChanged = true
+				kv.isSend = true
+				for k, v := range kv.LastConfig.Shards {
+					if v == kv.gid {
+						shard := Shard{
+							ShardNum: temShards[k].ShardNum,
+							Storage:  make(map[string]string),
+							RqRecord: make(map[int64]RequestInfo),
+							Status:   temShards[k].Status,
+						}
+						shard.Storage = temShards[k].Storage
+						shard.RqRecord = temShards[k].RqRecord
+						kv.shards[k] = shard
+						if shard.Status == "Working" {
+							kv.rqShardRecord[k].Receiver = -1
+						}
+					}
+				}
 			}
 			DEBUG(dDrop, "S%v [shardkv][gid:%v] restart apply  check %v %v, %v", kv.me, kv.gid, kv.isWorking, kv.LastConfig, kv.curConfig)
 			if !kv.isWorking && kv.LastConfig.Num != kv.curConfig.Num {
@@ -1228,6 +1259,8 @@ func (kv *ShardKV) ApplyConfigChange(lastConfig shardctrler.Config) {
 				delete(kv.temShards, v)
 			}
 		}
+		kv.isSend = false
+		kv.KvPersist()
 		kv.mu.Unlock()
 		kv.AppendShard()
 	}(Curneed2Control)
@@ -1617,25 +1650,31 @@ func (kv *ShardKV) Snap() {
 		kv.mu.Lock()
 		if kv.applyIndex > kv.snapshotIndex && kv.rf.Persister.RaftStateSize() >= kv.maxraftstate {
 			// DEBUG(dDrop, "S%v[shardkv][gid:%v] snap %v", kv.me, kv.gid, kv.applyIndex)
-			w := new(bytes.Buffer)
-			e := labgob.NewEncoder(w)
-			e.Encode(kv.applyIndex)
-			e.Encode(kv.shards)
-			e.Encode(kv.rqRecord)
-			e.Encode(kv.curConfig)
-			e.Encode(kv.LastConfig)
-			e.Encode(kv.rqShardRecord)
-			e.Encode(kv.isWorking)
-			e.Encode(kv.isChanged)
-			e.Encode(kv.istem)
-			data := w.Bytes()
-			DEBUG(dDrop, "S%v[shardkv][gid:%v] snap %v %v ", kv.me, kv.gid, kv.applyIndex, len(data))
-			kv.snapshotIndex = kv.applyIndex
-			kv.rf.Snapshot(kv.applyIndex, data)
+			kv.KvPersist()
 			kv.mu.Unlock()
 		} else {
 			kv.mu.Unlock()
 		}
 		time.Sleep(time.Millisecond * 50)
 	}
+}
+
+func (kv *ShardKV) KvPersist() {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.applyIndex)
+	e.Encode(kv.shards)
+	e.Encode(kv.rqRecord)
+	e.Encode(kv.curConfig)
+	e.Encode(kv.LastConfig)
+	e.Encode(kv.rqShardRecord)
+	e.Encode(kv.isWorking)
+	e.Encode(kv.isChanged)
+	e.Encode(kv.istem)
+	e.Encode(kv.temShards)
+	e.Encode(kv.isSend)
+	data := w.Bytes()
+	DEBUG(dDrop, "S%v[shardkv][gid:%v] snap %v %v ", kv.me, kv.gid, kv.applyIndex, len(data))
+	kv.snapshotIndex = kv.applyIndex
+	kv.rf.Snapshot(kv.applyIndex, data)
 }

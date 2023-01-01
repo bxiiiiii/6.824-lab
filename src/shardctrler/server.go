@@ -10,7 +10,7 @@ import (
 	"6.824/raft"
 )
 
-// import sync "github.com/sasha-s/go-deadlock"
+import dsync "github.com/sasha-s/go-deadlock"
 
 const (
 	Completed     = "Completed"
@@ -20,7 +20,7 @@ const (
 )
 
 type ShardCtrler struct {
-	mu      sync.Mutex
+	mu      dsync.Mutex
 	me      int
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
